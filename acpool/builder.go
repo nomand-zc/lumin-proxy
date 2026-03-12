@@ -37,6 +37,8 @@ type Dependencies struct {
 	StatsStore storage.StatsStore
 	// UsageTracker 用量追踪器
 	UsageTracker usagetracker.UsageTracker
+	// usageStore 用量存储（构建过程中内部使用，不对外暴露）
+	usageStore storage.UsageStore
 	// closers 需要在关闭时释放的资源（如数据库连接）
 	closers []io.Closer
 }
@@ -58,28 +60,23 @@ func Build(cfg config.ACPoolConfig) (*Dependencies, error) {
 	deps := &Dependencies{}
 
 	// ① 构建 Storage 层
-	accountStore, providerStore, statsStore, usageStore, closers, err := buildStorage(cfg.Storage)
-	if err != nil {
+	if err := deps.buildStorage(cfg.Storage); err != nil {
 		return nil, fmt.Errorf("acpool: 构建存储层失败: %w", err)
 	}
-	deps.AccountStorage = accountStore
-	deps.ProviderStorage = providerStore
-	deps.StatsStore = statsStore
-	deps.closers = closers
 
 	// ② 组装 balancer.Option 列表
 	opts := []balancer.Option{
-		balancer.WithAccountStorage(accountStore),
-		balancer.WithProviderStorage(providerStore),
+		balancer.WithAccountStorage(deps.AccountStorage),
+		balancer.WithProviderStorage(deps.ProviderStorage),
 	}
 
 	// StatsStore
-	if statsStore != nil {
-		opts = append(opts, balancer.WithStatsStore(statsStore))
+	if deps.StatsStore != nil {
+		opts = append(opts, balancer.WithStatsStore(deps.StatsStore))
 	}
 
 	// Selector（账号级选择策略）
-	sel, err := buildSelector(cfg.Balancer.Selector, statsStore)
+	sel, err := deps.buildSelector(cfg.Balancer.Selector)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +85,7 @@ func Build(cfg config.ACPoolConfig) (*Dependencies, error) {
 	}
 
 	// GroupSelector（供应商级选择策略）
-	gsel, err := buildGroupSelector(cfg.Balancer.GroupSelector)
+	gsel, err := deps.buildGroupSelector(cfg.Balancer.GroupSelector)
 	if err != nil {
 		return nil, err
 	}
@@ -97,8 +94,8 @@ func Build(cfg config.ACPoolConfig) (*Dependencies, error) {
 	}
 
 	// CircuitBreaker（熔断器）
-	if cfg.Balancer.CircuitBreaker != nil && statsStore != nil {
-		cb, err := buildCircuitBreaker(cfg.Balancer.CircuitBreaker, statsStore)
+	if cfg.Balancer.CircuitBreaker != nil && deps.StatsStore != nil {
+		cb, err := deps.buildCircuitBreaker(cfg.Balancer.CircuitBreaker)
 		if err != nil {
 			return nil, err
 		}
@@ -107,20 +104,19 @@ func Build(cfg config.ACPoolConfig) (*Dependencies, error) {
 
 	// CooldownManager（冷却管理器）
 	if cfg.Balancer.Cooldown != nil {
-		cm := buildCooldownManager(cfg.Balancer.Cooldown)
+		cm := deps.buildCooldownManager(cfg.Balancer.Cooldown)
 		opts = append(opts, balancer.WithCooldownManager(cm))
 	}
 
 	// UsageTracker（用量追踪器）
 	// 注意：若配了 Cooldown 但未配 UsageTracker，balancer.New() 内部会自动创建带冷却回调的实例
 	if cfg.Balancer.UsageTracker != nil {
-		ut := buildUsageTracker(cfg.Balancer.UsageTracker, usageStore)
-		deps.UsageTracker = ut
-		opts = append(opts, balancer.WithUsageTracker(ut))
+		deps.buildUsageTracker(cfg.Balancer.UsageTracker)
+		opts = append(opts, balancer.WithUsageTracker(deps.UsageTracker))
 	}
 
 	// OccupancyController（占用控制器）
-	oc, err := buildOccupancy(cfg.Balancer.Occupancy, deps.UsageTracker)
+	oc, err := deps.buildOccupancy(cfg.Balancer.Occupancy)
 	if err != nil {
 		return nil, err
 	}
@@ -148,42 +144,33 @@ func Build(cfg config.ACPoolConfig) (*Dependencies, error) {
 
 // --- Storage 构建 ---
 
-// buildStorage 根据配置构建存储层的各个子 Store。
-// 返回值依次为: AccountStorage, ProviderStorage, StatsStore, UsageStore, Closers, Error。
-func buildStorage(cfg config.StorageDriverConfig) (
-	storage.AccountStorage,
-	storage.ProviderStorage,
-	storage.StatsStore,
-	storage.UsageStore,
-	[]io.Closer,
-	error,
-) {
+// buildStorage 根据配置构建存储层的各个子 Store，并填充到 Dependencies 中。
+func (d *Dependencies) buildStorage(cfg config.StorageDriverConfig) error {
 	switch cfg.Driver {
 	case "", "memory":
-		return accountstore.NewStore(),
-			providerstore.NewStore(),
-			statsstore.NewMemoryStatsStore(),
-			usagestore.NewMemoryUsageStore(),
-			nil, // memory 无需 closer
-			nil
+		d.AccountStorage = accountstore.NewStore()
+		d.ProviderStorage = providerstore.NewStore()
+		d.StatsStore = statsstore.NewMemoryStatsStore()
+		d.usageStore = usagestore.NewMemoryUsageStore()
+		return nil
 	case "mysql":
 		// TODO: 根据 cfg.DSN 构建 MySQL 存储实现
-		return nil, nil, nil, nil, nil, fmt.Errorf("acpool: mysql 存储驱动暂未实现")
+		return fmt.Errorf("acpool: mysql 存储驱动暂未实现")
 	case "sqlite":
 		// TODO: 根据 cfg.DSN 构建 SQLite 存储实现
-		return nil, nil, nil, nil, nil, fmt.Errorf("acpool: sqlite 存储驱动暂未实现")
+		return fmt.Errorf("acpool: sqlite 存储驱动暂未实现")
 	case "redis":
 		// TODO: 根据 cfg.Addr 构建 Redis 存储实现
-		return nil, nil, nil, nil, nil, fmt.Errorf("acpool: redis 存储驱动暂未实现")
+		return fmt.Errorf("acpool: redis 存储驱动暂未实现")
 	default:
-		return nil, nil, nil, nil, nil, fmt.Errorf("acpool: 不支持的存储驱动: %s", cfg.Driver)
+		return fmt.Errorf("acpool: 不支持的存储驱动: %s", cfg.Driver)
 	}
 }
 
 // --- Selector 构建 ---
 
 // buildSelector 根据策略名称构建账号级选择器。
-func buildSelector(name string, statsStore storage.StatsStore) (selector.Selector, error) {
+func (d *Dependencies) buildSelector(name string) (selector.Selector, error) {
 	switch name {
 	case "", "round_robin":
 		// 默认策略，返回 nil 让 balancer.New() 使用内置默认值
@@ -196,10 +183,10 @@ func buildSelector(name string, statsStore storage.StatsStore) (selector.Selecto
 	case "weighted":
 		return accountstrategies.NewWeighted(), nil
 	case "least_used":
-		if statsStore == nil {
+		if d.StatsStore == nil {
 			return nil, fmt.Errorf("acpool: least_used 策略需要 StatsStore 支持")
 		}
-		return accountstrategies.NewLeastUsed(statsStore), nil
+		return accountstrategies.NewLeastUsed(d.StatsStore), nil
 	case "affinity":
 		return accountstrategies.NewAffinity(), nil
 	default:
@@ -208,7 +195,7 @@ func buildSelector(name string, statsStore storage.StatsStore) (selector.Selecto
 }
 
 // buildGroupSelector 根据策略名称构建供应商级选择器。
-func buildGroupSelector(name string) (selector.GroupSelector, error) {
+func (d *Dependencies) buildGroupSelector(name string) (selector.GroupSelector, error) {
 	switch name {
 	case "", "group_priority":
 		// 默认策略，返回 nil 让 balancer.New() 使用内置默认值
@@ -232,9 +219,9 @@ func buildGroupSelector(name string) (selector.GroupSelector, error) {
 // --- CircuitBreaker 构建 ---
 
 // buildCircuitBreaker 根据配置构建熔断器。
-func buildCircuitBreaker(cfg *config.CBConfig, statsStore storage.StatsStore) (circuitbreaker.CircuitBreaker, error) {
+func (d *Dependencies) buildCircuitBreaker(cfg *config.CBConfig) (circuitbreaker.CircuitBreaker, error) {
 	cbOpts := []circuitbreaker.Option{
-		circuitbreaker.WithStatsStore(statsStore),
+		circuitbreaker.WithStatsStore(d.StatsStore),
 	}
 	if cfg.DefaultThreshold > 0 {
 		cbOpts = append(cbOpts, circuitbreaker.WithDefaultThreshold(cfg.DefaultThreshold))
@@ -258,7 +245,7 @@ func buildCircuitBreaker(cfg *config.CBConfig, statsStore storage.StatsStore) (c
 // --- CooldownManager 构建 ---
 
 // buildCooldownManager 根据配置构建冷却管理器。
-func buildCooldownManager(cfg *config.CooldownConfig) cooldown.CooldownManager {
+func (d *Dependencies) buildCooldownManager(cfg *config.CooldownConfig) cooldown.CooldownManager {
 	var cmOpts []cooldown.Option
 	if cfg.DefaultDuration > 0 {
 		cmOpts = append(cmOpts, cooldown.WithDefaultDuration(cfg.DefaultDuration))
@@ -268,22 +255,22 @@ func buildCooldownManager(cfg *config.CooldownConfig) cooldown.CooldownManager {
 
 // --- UsageTracker 构建 ---
 
-// buildUsageTracker 根据配置构建用量追踪器。
-func buildUsageTracker(cfg *config.UTConfig, usageStore storage.UsageStore) usagetracker.UsageTracker {
+// buildUsageTracker 根据配置构建用量追踪器，并设置到 Dependencies 中。
+func (d *Dependencies) buildUsageTracker(cfg *config.UTConfig) {
 	var utOpts []usagetracker.Option
 	if cfg.SafetyRatio > 0 {
 		utOpts = append(utOpts, usagetracker.WithSafetyRatio(cfg.SafetyRatio))
 	}
-	if usageStore != nil {
-		utOpts = append(utOpts, usagetracker.WithUsageStore(usageStore))
+	if d.usageStore != nil {
+		utOpts = append(utOpts, usagetracker.WithUsageStore(d.usageStore))
 	}
-	return usagetracker.NewUsageTracker(utOpts...)
+	d.UsageTracker = usagetracker.NewUsageTracker(utOpts...)
 }
 
 // --- Occupancy 构建 ---
 
 // buildOccupancy 根据配置构建占用控制器。
-func buildOccupancy(cfg config.OccupancyConfig, ut usagetracker.UsageTracker) (occupancy.Controller, error) {
+func (d *Dependencies) buildOccupancy(cfg config.OccupancyConfig) (occupancy.Controller, error) {
 	switch cfg.Strategy {
 	case "", "unlimited":
 		// 默认策略，返回 nil 让 balancer.New() 使用内置默认值
@@ -298,7 +285,7 @@ func buildOccupancy(cfg config.OccupancyConfig, ut usagetracker.UsageTracker) (o
 		}
 		return occupancy.NewFixedLimit(limit), nil
 	case "adaptive_limit":
-		if ut == nil {
+		if d.UsageTracker == nil {
 			return nil, fmt.Errorf("acpool: adaptive_limit 策略需要配置 usage_tracker")
 		}
 		var adaptiveOpts []occupancy.AdaptiveLimitOption
@@ -314,7 +301,7 @@ func buildOccupancy(cfg config.OccupancyConfig, ut usagetracker.UsageTracker) (o
 		if cfg.FallbackLimit > 0 {
 			adaptiveOpts = append(adaptiveOpts, occupancy.WithFallbackLimit(cfg.FallbackLimit))
 		}
-		return occupancy.NewAdaptiveLimit(ut, adaptiveOpts...), nil
+		return occupancy.NewAdaptiveLimit(d.UsageTracker, adaptiveOpts...), nil
 	default:
 		return nil, fmt.Errorf("acpool: 不支持的 occupancy 策略: %s", cfg.Strategy)
 	}
