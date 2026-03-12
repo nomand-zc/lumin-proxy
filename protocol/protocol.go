@@ -31,7 +31,8 @@ type Adapter interface {
 
 	// Routes 返回该协议适配器需要注册的路由列表。
 	// 每个 Route 包含路径模式和对应的处理函数。
-	Routes(h http.Handler) []Route
+	// defaultHandler 是默认的代理处理器，Route 中的 Handler 字段为 nil 时使用它。
+	Routes(defaultHandler http.Handler) []Route
 }
 
 // Route 描述一条协议路由。

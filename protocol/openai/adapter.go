@@ -28,11 +28,11 @@ func (a *Adapter) Name() string {
 }
 
 // Routes 返回 OpenAI 协议需要注册的路由列表。
-func (a *Adapter) Routes(h http.Handler) []protocol.Route {
+func (a *Adapter) Routes(defaultHandler http.Handler) []protocol.Route {
 	return []protocol.Route{
 		{
 			Pattern: "/chat/completions",
-			Handler: h,
+			Handler: defaultHandler,
 		},
 		{
 			Pattern: "/models",

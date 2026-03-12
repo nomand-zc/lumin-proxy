@@ -1,6 +1,7 @@
 package errs
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -98,29 +99,10 @@ func Wrap(code Code, message string, cause error) *ProxyError {
 // IsProxyError 检查 error 是否为 ProxyError 类型。
 func IsProxyError(err error) (*ProxyError, bool) {
 	var pe *ProxyError
-	if ok := isAs(err, &pe); ok {
+	if errors.As(err, &pe) {
 		return pe, true
 	}
 	return nil, false
 }
 
-func isAs(err error, target interface{}) bool {
-	type asInterface interface {
-		As(interface{}) bool
-	}
-	for err != nil {
-		if x, ok := err.(asInterface); ok && x.As(target) {
-			return true
-		}
-		if x, ok := err.(*ProxyError); ok {
-			*target.(**ProxyError) = x
-			return true
-		}
-		unwrapper, ok := err.(interface{ Unwrap() error })
-		if !ok {
-			return false
-		}
-		err = unwrapper.Unwrap()
-	}
-	return false
-}
+

@@ -56,39 +56,9 @@ func NewDefaultProxy(opts ...DefaultProxyOption) *DefaultProxy {
 
 // Handle 处理非流式代理请求。
 func (p *DefaultProxy) Handle(ctx context.Context, req *protocol.Request) (*Result, error) {
-	// ① BeforeRequest 钩子
-	reqInfo := buildRequestInfo(req)
-	if p.hookRunner != nil {
-		var err error
-		ctx, err = p.hookRunner.RunBeforeRequest(ctx, reqInfo)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// 检查依赖是否已配置
-	if p.balancer == nil {
-		return nil, errs.New(errs.CodeInternal, "Balancer 未配置")
-	}
-	if p.providerRegistry == nil {
-		return nil, errs.New(errs.CodeInternal, "ProviderRegistry 未配置")
-	}
-
-	// ② Pick 账号
-	pickResult, err := p.balancer.Pick(ctx, &balancer.PickRequest{
-		Model:          req.Model,
-		UserID:         reqInfo.UserID,
-		EnableFailover: true,
-		MaxRetries:     2,
-	})
+	ctx, reqInfo, pickResult, provider, err := p.prepare(ctx, req)
 	if err != nil {
-		return nil, errs.Wrap(errs.CodeNoAvailableAccount, "无可用账号", err)
-	}
-
-	// ③ 获取 Provider 实例
-	provider, err := p.providerRegistry.GetProvider(pickResult.ProviderKey.Type, pickResult.ProviderKey.Name)
-	if err != nil {
-		return nil, errs.Wrap(errs.CodeInternal, "获取 Provider 失败", err)
+		return nil, err
 	}
 
 	// ④ 调用上游
@@ -124,39 +94,9 @@ func (p *DefaultProxy) Handle(ctx context.Context, req *protocol.Request) (*Resu
 
 // HandleStream 处理流式代理请求。
 func (p *DefaultProxy) HandleStream(ctx context.Context, req *protocol.Request) (*StreamResult, error) {
-	// ① BeforeRequest 钩子
-	reqInfo := buildRequestInfo(req)
-	if p.hookRunner != nil {
-		var err error
-		ctx, err = p.hookRunner.RunBeforeRequest(ctx, reqInfo)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// 检查依赖是否已配置
-	if p.balancer == nil {
-		return nil, errs.New(errs.CodeInternal, "Balancer 未配置")
-	}
-	if p.providerRegistry == nil {
-		return nil, errs.New(errs.CodeInternal, "ProviderRegistry 未配置")
-	}
-
-	// ② Pick 账号
-	pickResult, err := p.balancer.Pick(ctx, &balancer.PickRequest{
-		Model:          req.Model,
-		UserID:         reqInfo.UserID,
-		EnableFailover: true,
-		MaxRetries:     2,
-	})
+	ctx, reqInfo, pickResult, provider, err := p.prepare(ctx, req)
 	if err != nil {
-		return nil, errs.Wrap(errs.CodeNoAvailableAccount, "无可用账号", err)
-	}
-
-	// ③ 获取 Provider 实例
-	provider, err := p.providerRegistry.GetProvider(pickResult.ProviderKey.Type, pickResult.ProviderKey.Name)
-	if err != nil {
-		return nil, errs.Wrap(errs.CodeInternal, "获取 Provider 失败", err)
+		return nil, err
 	}
 
 	// ④ 调用上游（流式）
@@ -176,6 +116,48 @@ func (p *DefaultProxy) HandleStream(ctx context.Context, req *protocol.Request) 
 		ProviderType: pickResult.ProviderKey.Type,
 		ProviderName: pickResult.ProviderKey.Name,
 	}, nil
+}
+
+// prepare 执行请求处理的公共前置步骤：BeforeRequest 钩子 → 依赖检查 → Pick 账号 → 获取 Provider。
+func (p *DefaultProxy) prepare(ctx context.Context, req *protocol.Request) (
+	context.Context, *plugin.RequestInfo, *balancer.PickResult, providers.Provider, error,
+) {
+	// ① BeforeRequest 钩子
+	reqInfo := buildRequestInfo(req)
+	if p.hookRunner != nil {
+		var err error
+		ctx, err = p.hookRunner.RunBeforeRequest(ctx, reqInfo)
+		if err != nil {
+			return ctx, nil, nil, nil, err
+		}
+	}
+
+	// 检查依赖是否已配置
+	if p.balancer == nil {
+		return ctx, nil, nil, nil, errs.New(errs.CodeInternal, "Balancer 未配置")
+	}
+	if p.providerRegistry == nil {
+		return ctx, nil, nil, nil, errs.New(errs.CodeInternal, "ProviderRegistry 未配置")
+	}
+
+	// ② Pick 账号
+	pickResult, err := p.balancer.Pick(ctx, &balancer.PickRequest{
+		Model:          req.Model,
+		UserID:         reqInfo.UserID,
+		EnableFailover: true,
+		MaxRetries:     2,
+	})
+	if err != nil {
+		return ctx, nil, nil, nil, errs.Wrap(errs.CodeNoAvailableAccount, "无可用账号", err)
+	}
+
+	// ③ 获取 Provider 实例
+	provider, err := p.providerRegistry.GetProvider(pickResult.ProviderKey.Type, pickResult.ProviderKey.Name)
+	if err != nil {
+		return ctx, nil, nil, nil, errs.Wrap(errs.CodeInternal, "获取 Provider 失败", err)
+	}
+
+	return ctx, reqInfo, pickResult, provider, nil
 }
 
 // hookedStream 包装原始流，注入 OnStreamChunk 钩子和 Report 逻辑。
@@ -220,21 +202,7 @@ func (s *hookedStream) Pop(ctx context.Context) (*providers.Response, error) {
 	}
 
 	s.lastResp = resp
-
-	// OnStreamChunk 钩子
-	if s.hookRunner != nil {
-		chunkInfo := &plugin.ResponseInfo{
-			AccountID:    s.pickResult.Account.ID,
-			ProviderType: s.pickResult.ProviderKey.Type,
-			ProviderName: s.pickResult.ProviderKey.Name,
-		}
-		if resp.Usage != nil {
-			chunkInfo.PromptTokens = resp.Usage.PromptTokens
-			chunkInfo.CompletionTokens = resp.Usage.CompletionTokens
-			chunkInfo.TotalTokens = resp.Usage.TotalTokens
-		}
-		s.hookRunner.RunOnStreamChunk(s.ctx, s.reqInfo, chunkInfo)
-	}
+	s.processChunk(resp)
 
 	// 最终 chunk 时 Report
 	if resp.Done {
@@ -247,21 +215,7 @@ func (s *hookedStream) Pop(ctx context.Context) (*providers.Response, error) {
 func (s *hookedStream) Each(ctx context.Context, fn func(*providers.Response) error) error {
 	return s.inner.Each(ctx, func(resp *providers.Response) error {
 		s.lastResp = resp
-
-		// OnStreamChunk 钩子
-		if s.hookRunner != nil {
-			chunkInfo := &plugin.ResponseInfo{
-				AccountID:    s.pickResult.Account.ID,
-				ProviderType: s.pickResult.ProviderKey.Type,
-				ProviderName: s.pickResult.ProviderKey.Name,
-			}
-			if resp.Usage != nil {
-				chunkInfo.PromptTokens = resp.Usage.PromptTokens
-				chunkInfo.CompletionTokens = resp.Usage.CompletionTokens
-				chunkInfo.TotalTokens = resp.Usage.TotalTokens
-			}
-			s.hookRunner.RunOnStreamChunk(s.ctx, s.reqInfo, chunkInfo)
-		}
+		s.processChunk(resp)
 
 		if resp.Done {
 			s.doReport(nil)
@@ -273,6 +227,24 @@ func (s *hookedStream) Each(ctx context.Context, fn func(*providers.Response) er
 
 func (s *hookedStream) Len() int {
 	return s.inner.Len()
+}
+
+// processChunk 执行 OnStreamChunk 钩子。
+func (s *hookedStream) processChunk(resp *providers.Response) {
+	if s.hookRunner == nil {
+		return
+	}
+	chunkInfo := &plugin.ResponseInfo{
+		AccountID:    s.pickResult.Account.ID,
+		ProviderType: s.pickResult.ProviderKey.Type,
+		ProviderName: s.pickResult.ProviderKey.Name,
+	}
+	if resp.Usage != nil {
+		chunkInfo.PromptTokens = resp.Usage.PromptTokens
+		chunkInfo.CompletionTokens = resp.Usage.CompletionTokens
+		chunkInfo.TotalTokens = resp.Usage.TotalTokens
+	}
+	s.hookRunner.RunOnStreamChunk(s.ctx, s.reqInfo, chunkInfo)
 }
 
 func (s *hookedStream) doReport(err error) {

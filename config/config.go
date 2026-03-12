@@ -58,8 +58,43 @@ type ProtocolConfig struct {
 	Prefix string `yaml:"prefix"`
 }
 
-// PluginConfigs 插件配置列表。
-type PluginConfigs map[string]yaml.Node
+// PluginEntry 单个插件配置项，包含名称和配置内容。
+type PluginEntry struct {
+	// Name 插件名称
+	Name string
+	// Config 插件配置内容（延迟解码）
+	Config yaml.Node
+}
+
+// PluginConfigs 有序的插件配置列表。
+// YAML 中仍使用 map 格式书写，解码时保留声明顺序。
+type PluginConfigs []PluginEntry
+
+// UnmarshalYAML 自定义解码：将 YAML mapping 按声明顺序解码为有序切片。
+func (pc *PluginConfigs) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		return fmt.Errorf("plugins 必须是映射类型")
+	}
+	// MappingNode 的 Content 是 [key, value, key, value, ...] 交替排列
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		keyNode := value.Content[i]
+		valNode := value.Content[i+1]
+		*pc = append(*pc, PluginEntry{
+			Name:   keyNode.Value,
+			Config: *valNode,
+		})
+	}
+	return nil
+}
+
+// ToMap 转换为 map 格式，用于需要按名称查找的场景（如热更新）。
+func (pc PluginConfigs) ToMap() map[string]yaml.Node {
+	m := make(map[string]yaml.Node, len(pc))
+	for _, entry := range pc {
+		m[entry.Name] = entry.Config
+	}
+	return m
+}
 
 // AdminConfig 运维接口配置。
 type AdminConfig struct {

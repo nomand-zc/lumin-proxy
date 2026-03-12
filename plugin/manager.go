@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nomand-zc/lumin-client/log"
+	"github.com/nomand-zc/lumin-proxy/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -41,26 +42,27 @@ func NewManager() *Manager {
 	return &Manager{}
 }
 
-// SetupAll 根据配置初始化所有插件。
+// SetupAll 根据配置按声明顺序初始化所有插件。
 // 借鉴 trpc-go 的 SetupClosables 流程：加载 → 初始化 → 收集钩子。
-func (m *Manager) SetupAll(ctx context.Context, configs map[string]yaml.Node) error {
+func (m *Manager) SetupAll(ctx context.Context, configs config.PluginConfigs) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	for name, cfgNode := range configs {
-		f, ok := Get(name)
+	for _, entry := range configs {
+		f, ok := Get(entry.Name)
 		if !ok {
-		log.Warnf("插件未注册，跳过: name=%s", name)
+			log.Warnf("插件未注册，跳过: name=%s", entry.Name)
 			continue
 		}
 
 		// 带超时的插件初始化
-		if err := m.setupOne(ctx, name, f, &cfgNode); err != nil {
-			return fmt.Errorf("初始化插件 %q 失败: %w", name, err)
+		cfgNode := entry.Config
+		if err := m.setupOne(ctx, entry.Name, f, &cfgNode); err != nil {
+			return fmt.Errorf("初始化插件 %q 失败: %w", entry.Name, err)
 		}
 
 		m.initialized = append(m.initialized, initializedPlugin{
-			name:    name,
+			name:    entry.Name,
 			factory: f,
 		})
 
@@ -87,7 +89,7 @@ func (m *Manager) SetupAll(ctx context.Context, configs map[string]yaml.Node) er
 			}
 		}
 
-		log.Infof("插件初始化完成: name=%s, type=%s", name, f.Type())
+		log.Infof("插件初始化完成: name=%s, type=%s", entry.Name, f.Type())
 	}
 
 	return nil
@@ -183,21 +185,22 @@ func (m *Manager) CloseAll(ctx context.Context) error {
 }
 
 // ReloadAll 对所有实现了 Reloadable 接口的插件执行热更新。
-func (m *Manager) ReloadAll(ctx context.Context, configs map[string]yaml.Node) error {
+func (m *Manager) ReloadAll(ctx context.Context, configs config.PluginConfigs) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	cfgMap := configs.ToMap()
 	for _, p := range m.initialized {
 		reloadable, ok := p.factory.(Reloadable)
 		if !ok {
 			continue
 		}
-		cfgNode, exists := configs[p.name]
+		cfgNode, exists := cfgMap[p.name]
 		if !exists {
 			continue
 		}
 		if err := reloadable.Reload(ctx, &YamlNodeDecoder{Node: &cfgNode}); err != nil {
-		log.Errorf("热更新插件失败: name=%s, error=%v", p.name, err)
+			log.Errorf("热更新插件失败: name=%s, error=%v", p.name, err)
 			return fmt.Errorf("热更新插件 %q 失败: %w", p.name, err)
 		}
 		log.Infof("插件热更新完成: name=%s", p.name)
