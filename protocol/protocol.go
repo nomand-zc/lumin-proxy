@@ -28,6 +28,20 @@ type Adapter interface {
 
 	// WriteError 将错误写回 HTTP 响应（遵循该协议的错误格式）。
 	WriteError(w http.ResponseWriter, err error)
+
+	// Routes 返回该协议适配器需要注册的路由列表。
+	// 每个 Route 包含路径模式和对应的处理函数。
+	Routes(h http.Handler) []Route
+}
+
+// Route 描述一条协议路由。
+type Route struct {
+	// Pattern 路由路径模式，如 "/chat/completions"
+	Pattern string
+	// Handler 路由的 HTTP Handler；如果为 nil，则使用传入的默认 Handler
+	Handler http.Handler
+	// IsPrefix 是否为前缀匹配模式
+	IsPrefix bool
 }
 
 // Request 是协议无关的统一代理请求。
@@ -37,7 +51,7 @@ type Request struct {
 	// Stream 是否为流式请求
 	Stream bool
 	// ProviderRequest 转换后的统一请求体（lumin-client 格式）
-	ProviderRequest providers.Request
+	ProviderRequest *providers.Request
 	// RawBody 原始请求体（用于透传或审计）
 	RawBody []byte
 	// Metadata 额外元数据（供插件消费）

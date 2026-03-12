@@ -4,11 +4,11 @@ package auth
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 
+	"github.com/nomand-zc/lumin-client/log"
 	"github.com/nomand-zc/lumin-proxy/plugin"
 )
 
@@ -66,7 +66,7 @@ func (p *AuthPlugin) Setup(ctx context.Context, name string, dec plugin.Decoder)
 		p.skipPaths = []string{"/healthz", "/metrics", "/ready"}
 	}
 
-	slog.Info("鉴权插件初始化完成", "keys_count", len(p.keys), "enabled", p.enabled)
+	log.Infof("鉴权插件初始化完成: keys_count=%d, enabled=%v", len(p.keys), p.enabled)
 	return nil
 }
 
@@ -142,7 +142,7 @@ func (p *AuthPlugin) Reload(ctx context.Context, dec plugin.Decoder) error {
 		p.enabled = *cfg.Enabled
 	}
 
-	slog.Info("鉴权插件热更新完成", "keys_count", len(p.keys))
+	log.Infof("鉴权插件热更新完成: keys_count=%d", len(p.keys))
 	return nil
 }
 

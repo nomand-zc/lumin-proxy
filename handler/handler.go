@@ -3,9 +3,9 @@ package handler
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 
+	"github.com/nomand-zc/lumin-client/log"
 	"github.com/nomand-zc/lumin-proxy/protocol"
 	"github.com/nomand-zc/lumin-proxy/proxy"
 )
@@ -31,16 +31,9 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// ① 解析请求
 	req, err := h.adapter.ParseRequest(r)
 	if err != nil {
-		slog.Error("解析请求失败", "error", err, "protocol", h.adapter.Name())
+		log.Errorf("解析请求失败: error=%v, protocol=%s", err, h.adapter.Name())
 		h.adapter.WriteError(w, err)
 		return
-	}
-
-	// 将 HTTP 请求中的元数据（如 API Key）传递给协议请求
-	if apiKey := r.Header.Get("Authorization"); apiKey != "" {
-		if req.Metadata == nil {
-			req.Metadata = make(map[string]any)
-		}
 	}
 
 	// ② 根据是否流式分别处理
@@ -55,13 +48,13 @@ func (h *ProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *ProxyHandler) handleNonStream(ctx context.Context, w http.ResponseWriter, req *protocol.Request) {
 	result, err := h.proxy.Handle(ctx, req)
 	if err != nil {
-		slog.Error("代理请求失败", "error", err, "model", req.Model)
+		log.Errorf("代理请求失败: error=%v, model=%s", err, req.Model)
 		h.adapter.WriteError(w, err)
 		return
 	}
 
 	if err := h.adapter.WriteResponse(ctx, w, result.Response); err != nil {
-		slog.Error("写入响应失败", "error", err)
+		log.Errorf("写入响应失败: error=%v", err)
 	}
 }
 
@@ -69,12 +62,12 @@ func (h *ProxyHandler) handleNonStream(ctx context.Context, w http.ResponseWrite
 func (h *ProxyHandler) handleStream(ctx context.Context, w http.ResponseWriter, req *protocol.Request) {
 	result, err := h.proxy.HandleStream(ctx, req)
 	if err != nil {
-		slog.Error("流式代理请求失败", "error", err, "model", req.Model)
+		log.Errorf("流式代理请求失败: error=%v, model=%s", err, req.Model)
 		h.adapter.WriteError(w, err)
 		return
 	}
 
 	if err := h.adapter.WriteStreamResponse(ctx, w, result.Stream); err != nil {
-		slog.Error("写入流式响应失败", "error", err)
+		log.Errorf("写入流式响应失败: error=%v", err)
 	}
 }

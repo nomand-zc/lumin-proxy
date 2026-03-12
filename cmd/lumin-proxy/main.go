@@ -3,13 +3,11 @@ package main
 import (
 	"context"
 	"flag"
-	"log/slog"
 	"os"
 
-	"github.com/go-kratos/kratos/v2"
-
-	"github.com/nomand-zc/lumin-proxy/bootstrap"
+	"github.com/nomand-zc/lumin-client/log"
 	"github.com/nomand-zc/lumin-proxy/config"
+	"github.com/nomand-zc/lumin-proxy/server"
 
 	// 通过 init() 注册协议适配器
 	_ "github.com/nomand-zc/lumin-proxy/protocol/openai"
@@ -29,43 +27,30 @@ func init() {
 func main() {
 	flag.Parse()
 
-	// 初始化日志
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	})))
-
-	slog.Info("lumin-proxy 启动中...", "config", configPath)
+	log.Infof("lumin-proxy 启动中..., config=%s", configPath)
 
 	// ① 加载配置
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		slog.Error("加载配置失败", "error", err)
+		log.Errorf("加载配置失败: %v", err)
 		os.Exit(1)
 	}
+
+	// 根据配置设置日志级别
+	log.SetLevel(cfg.Log.Level)
 
 	ctx := context.Background()
 
-	// ② Bootstrap: 初始化所有依赖
-	app, err := bootstrap.Init(ctx, cfg)
+	// ② 创建 Server 实例（初始化所有依赖）
+	srv, err := server.New(ctx, cfg)
 	if err != nil {
-		slog.Error("初始化服务失败", "error", err)
+		log.Errorf("初始化服务失败: %v", err)
 		os.Exit(1)
 	}
 
-	// ③ 构建 Kratos App
-	kratosApp := kratos.New(
-		kratos.Name("lumin-proxy"),
-		kratos.Server(app.HTTPServer),
-		kratos.AfterStop(func(ctx context.Context) error {
-			slog.Info("正在关闭插件...")
-			return app.Shutdown(ctx)
-		}),
-	)
-
-	// ④ 启动
-	slog.Info("lumin-proxy 已启动", "address", cfg.Server.Address)
-	if err := kratosApp.Run(); err != nil {
-		slog.Error("服务运行错误", "error", err)
+	// ③ 启动服务
+	if err := srv.Run(); err != nil {
+		log.Errorf("服务运行错误: %v", err)
 		os.Exit(1)
 	}
 }

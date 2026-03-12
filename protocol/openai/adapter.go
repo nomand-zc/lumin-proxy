@@ -27,6 +27,23 @@ func (a *Adapter) Name() string {
 	return "openai"
 }
 
+// Routes 返回 OpenAI 协议需要注册的路由列表。
+func (a *Adapter) Routes(h http.Handler) []protocol.Route {
+	return []protocol.Route{
+		{
+			Pattern: "/chat/completions",
+			Handler: h,
+		},
+		{
+			Pattern: "/models",
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte(`{"object":"list","data":[]}`))
+			}),
+		},
+	}
+}
+
 // --- 请求类型定义 ---
 
 // ChatCompletionRequest OpenAI Chat Completion 请求体。
@@ -115,7 +132,7 @@ func (a *Adapter) ParseRequest(r *http.Request) (*protocol.Request, error) {
 	return &protocol.Request{
 		Model:           req.Model,
 		Stream:          req.Stream,
-		ProviderRequest: provReq,
+		ProviderRequest: &provReq,
 		RawBody:         body,
 		Metadata:        make(map[string]any),
 	}, nil
@@ -254,4 +271,3 @@ func convertTools(tools []ChatTool) []providers.Tool {
 	}
 	return result
 }
-

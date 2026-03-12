@@ -1,11 +1,11 @@
-package bootstrap
+package server
 
 import (
 	"github.com/nomand-zc/lumin-acpool/balancer"
 	"github.com/nomand-zc/lumin-proxy/proxy"
 )
 
-// Option 是 Bootstrap 的配置选项。
+// Option 是 Server 的配置选项。
 type Option func(*options)
 
 type options struct {

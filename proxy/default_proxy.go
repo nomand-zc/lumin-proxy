@@ -3,9 +3,9 @@ package proxy
 import (
 	"context"
 	"fmt"
-	"log/slog"
 
 	"github.com/nomand-zc/lumin-acpool/balancer"
+	"github.com/nomand-zc/lumin-client/log"
 	"github.com/nomand-zc/lumin-client/providers"
 	"github.com/nomand-zc/lumin-client/queue"
 	"github.com/nomand-zc/lumin-proxy/errs"
@@ -13,18 +13,12 @@ import (
 	"github.com/nomand-zc/lumin-proxy/protocol"
 )
 
-// ProviderRegistry 是获取 Provider 实例的接口。
-type ProviderRegistry interface {
-	// GetProvider 根据 providerType + providerName 获取 Provider 实例。
-	GetProvider(providerType, providerName string) (providers.Provider, error)
-}
-
 // DefaultProxy 是代理核心层的默认实现。
 // 执行 BeforeRequest → Pick → Invoke → Report → AfterResponse 流程。
 type DefaultProxy struct {
 	balancer         balancer.Balancer
 	providerRegistry ProviderRegistry
-	pluginManager    *plugin.Manager
+	hookRunner       plugin.HookRunner
 }
 
 // DefaultProxyOption 是 DefaultProxy 的配置选项。
@@ -44,10 +38,10 @@ func WithProviderRegistry(r ProviderRegistry) DefaultProxyOption {
 	}
 }
 
-// WithPluginManager 设置 PluginManager。
-func WithPluginManager(pm *plugin.Manager) DefaultProxyOption {
+// WithHookRunner 设置 HookRunner。
+func WithHookRunner(hr plugin.HookRunner) DefaultProxyOption {
 	return func(p *DefaultProxy) {
-		p.pluginManager = pm
+		p.hookRunner = hr
 	}
 }
 
@@ -64,9 +58,9 @@ func NewDefaultProxy(opts ...DefaultProxyOption) *DefaultProxy {
 func (p *DefaultProxy) Handle(ctx context.Context, req *protocol.Request) (*Result, error) {
 	// ① BeforeRequest 钩子
 	reqInfo := buildRequestInfo(req)
-	if p.pluginManager != nil {
+	if p.hookRunner != nil {
 		var err error
-		ctx, err = p.pluginManager.RunBeforeRequest(ctx, reqInfo)
+		ctx, err = p.hookRunner.RunBeforeRequest(ctx, reqInfo)
 		if err != nil {
 			return nil, err
 		}
@@ -98,7 +92,8 @@ func (p *DefaultProxy) Handle(ctx context.Context, req *protocol.Request) (*Resu
 	}
 
 	// ④ 调用上游
-	resp, err := provider.GenerateContent(ctx, pickResult.Account.Credential, req.ProviderRequest)
+	req.ProviderRequest.Credential = pickResult.Account.Credential
+	resp, err := provider.GenerateContent(ctx, req.ProviderRequest)
 
 	// ⑤ Report
 	if err != nil {
@@ -119,9 +114,9 @@ func (p *DefaultProxy) Handle(ctx context.Context, req *protocol.Request) (*Resu
 	}
 
 	// ⑥ AfterResponse 钩子
-	if p.pluginManager != nil {
+	if p.hookRunner != nil {
 		respInfo := buildResponseInfo(result, resp)
-		p.pluginManager.RunAfterResponse(ctx, reqInfo, respInfo, nil)
+		p.hookRunner.RunAfterResponse(ctx, reqInfo, respInfo, nil)
 	}
 
 	return result, nil
@@ -131,9 +126,9 @@ func (p *DefaultProxy) Handle(ctx context.Context, req *protocol.Request) (*Resu
 func (p *DefaultProxy) HandleStream(ctx context.Context, req *protocol.Request) (*StreamResult, error) {
 	// ① BeforeRequest 钩子
 	reqInfo := buildRequestInfo(req)
-	if p.pluginManager != nil {
+	if p.hookRunner != nil {
 		var err error
-		ctx, err = p.pluginManager.RunBeforeRequest(ctx, reqInfo)
+		ctx, err = p.hookRunner.RunBeforeRequest(ctx, reqInfo)
 		if err != nil {
 			return nil, err
 		}
@@ -165,14 +160,15 @@ func (p *DefaultProxy) HandleStream(ctx context.Context, req *protocol.Request) 
 	}
 
 	// ④ 调用上游（流式）
-	stream, err := provider.GenerateContentStream(ctx, pickResult.Account.Credential, req.ProviderRequest)
+	req.ProviderRequest.Credential = pickResult.Account.Credential
+	stream, err := provider.GenerateContentStream(ctx, req.ProviderRequest)
 	if err != nil {
 		_ = p.balancer.ReportFailure(ctx, pickResult.Account.ID, err)
 		return nil, errs.Wrap(errs.CodeUpstreamError, "上游流式调用失败", err)
 	}
 
 	// 包装流：注入钩子 + 自动 Report
-	wrappedStream := newHookedStream(ctx, stream, p, reqInfo, pickResult)
+	wrappedStream := newHookedStream(ctx, stream, p.hookRunner, p.balancer, reqInfo, pickResult)
 
 	return &StreamResult{
 		Stream:       wrappedStream,
@@ -186,7 +182,8 @@ func (p *DefaultProxy) HandleStream(ctx context.Context, req *protocol.Request) 
 type hookedStream struct {
 	ctx        context.Context
 	inner      queue.Consumer[*providers.Response]
-	proxy      *DefaultProxy
+	hookRunner plugin.HookRunner
+	balancer   balancer.Balancer
 	reqInfo    *plugin.RequestInfo
 	pickResult *balancer.PickResult
 	lastResp   *providers.Response
@@ -196,14 +193,16 @@ type hookedStream struct {
 func newHookedStream(
 	ctx context.Context,
 	inner queue.Consumer[*providers.Response],
-	proxy *DefaultProxy,
+	hookRunner plugin.HookRunner,
+	balancer balancer.Balancer,
 	reqInfo *plugin.RequestInfo,
 	pickResult *balancer.PickResult,
 ) *hookedStream {
 	return &hookedStream{
 		ctx:        ctx,
 		inner:      inner,
-		proxy:      proxy,
+		hookRunner: hookRunner,
+		balancer:   balancer,
 		reqInfo:    reqInfo,
 		pickResult: pickResult,
 	}
@@ -223,7 +222,7 @@ func (s *hookedStream) Pop(ctx context.Context) (*providers.Response, error) {
 	s.lastResp = resp
 
 	// OnStreamChunk 钩子
-	if s.proxy.pluginManager != nil {
+	if s.hookRunner != nil {
 		chunkInfo := &plugin.ResponseInfo{
 			AccountID:    s.pickResult.Account.ID,
 			ProviderType: s.pickResult.ProviderKey.Type,
@@ -234,7 +233,7 @@ func (s *hookedStream) Pop(ctx context.Context) (*providers.Response, error) {
 			chunkInfo.CompletionTokens = resp.Usage.CompletionTokens
 			chunkInfo.TotalTokens = resp.Usage.TotalTokens
 		}
-		s.proxy.pluginManager.RunOnStreamChunk(s.ctx, s.reqInfo, chunkInfo)
+		s.hookRunner.RunOnStreamChunk(s.ctx, s.reqInfo, chunkInfo)
 	}
 
 	// 最终 chunk 时 Report
@@ -250,7 +249,7 @@ func (s *hookedStream) Each(ctx context.Context, fn func(*providers.Response) er
 		s.lastResp = resp
 
 		// OnStreamChunk 钩子
-		if s.proxy.pluginManager != nil {
+		if s.hookRunner != nil {
 			chunkInfo := &plugin.ResponseInfo{
 				AccountID:    s.pickResult.Account.ID,
 				ProviderType: s.pickResult.ProviderKey.Type,
@@ -261,7 +260,7 @@ func (s *hookedStream) Each(ctx context.Context, fn func(*providers.Response) er
 				chunkInfo.CompletionTokens = resp.Usage.CompletionTokens
 				chunkInfo.TotalTokens = resp.Usage.TotalTokens
 			}
-			s.proxy.pluginManager.RunOnStreamChunk(s.ctx, s.reqInfo, chunkInfo)
+			s.hookRunner.RunOnStreamChunk(s.ctx, s.reqInfo, chunkInfo)
 		}
 
 		if resp.Done {
@@ -283,13 +282,13 @@ func (s *hookedStream) doReport(err error) {
 	s.reported = true
 
 	if err != nil {
-		_ = s.proxy.balancer.ReportFailure(s.ctx, s.pickResult.Account.ID, err)
+		_ = s.balancer.ReportFailure(s.ctx, s.pickResult.Account.ID, err)
 	} else {
-		_ = s.proxy.balancer.ReportSuccess(s.ctx, s.pickResult.Account.ID)
+		_ = s.balancer.ReportSuccess(s.ctx, s.pickResult.Account.ID)
 	}
 
 	// AfterResponse 钩子
-	if s.proxy.pluginManager != nil {
+	if s.hookRunner != nil {
 		respInfo := &plugin.ResponseInfo{
 			AccountID:    s.pickResult.Account.ID,
 			ProviderType: s.pickResult.ProviderKey.Type,
@@ -300,12 +299,12 @@ func (s *hookedStream) doReport(err error) {
 			respInfo.CompletionTokens = s.lastResp.Usage.CompletionTokens
 			respInfo.TotalTokens = s.lastResp.Usage.TotalTokens
 		}
-		s.proxy.pluginManager.RunAfterResponse(s.ctx, s.reqInfo, respInfo, err)
+		s.hookRunner.RunAfterResponse(s.ctx, s.reqInfo, respInfo, err)
 	}
 
-	slog.Debug("流式请求完成",
-		"account_id", s.pickResult.Account.ID,
-		"provider", s.pickResult.ProviderKey.String(),
+	log.Debugf("流式请求完成: account_id=%s, provider=%s",
+		s.pickResult.Account.ID,
+		s.pickResult.ProviderKey.String(),
 	)
 }
 

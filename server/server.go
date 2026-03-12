@@ -1,15 +1,16 @@
-// Package bootstrap 负责从配置一站式组装所有依赖。
+// Package server 负责从配置一站式组装所有依赖并启动服务。
 // 初始化顺序: Config → PluginManager → Proxy → Router → Server
-package bootstrap
+package server
 
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 
+	"github.com/go-kratos/kratos/v2"
 	kratoshttp "github.com/go-kratos/kratos/v2/transport/http"
 
+	"github.com/nomand-zc/lumin-client/log"
 	"github.com/nomand-zc/lumin-proxy/config"
 	"github.com/nomand-zc/lumin-proxy/handler"
 	"github.com/nomand-zc/lumin-proxy/plugin"
@@ -17,17 +18,18 @@ import (
 	"github.com/nomand-zc/lumin-proxy/proxy"
 )
 
-// App 持有服务运行所需的全部依赖。
-type App struct {
+// Server 持有服务运行所需的全部依赖。
+type Server struct {
 	Config        *config.Config
-	HTTPServer    *kratoshttp.Server
-	PluginManager *plugin.Manager
+	httpServer    *kratoshttp.Server
+	kratosApp     *kratos.App
+	PluginManager plugin.LifecycleManager
 	Proxy         proxy.Proxy
 }
 
-// Init 根据配置初始化所有依赖。
-func Init(ctx context.Context, cfg *config.Config, opts ...Option) (*App, error) {
-	app := &App{
+// New 根据配置初始化所有依赖，返回 Server 实例。
+func New(ctx context.Context, cfg *config.Config, opts ...Option) (*Server, error) {
+	s := &Server{
 		Config: cfg,
 	}
 
@@ -44,11 +46,11 @@ func Init(ctx context.Context, cfg *config.Config, opts ...Option) (*App, error)
 			return nil, fmt.Errorf("初始化插件失败: %w", err)
 		}
 	}
-	app.PluginManager = pm
+	s.PluginManager = pm
 
 	// ② 初始化代理核心层
 	proxyOpts := []proxy.DefaultProxyOption{
-		proxy.WithPluginManager(pm),
+		proxy.WithHookRunner(pm),
 	}
 	if o.balancer != nil {
 		proxyOpts = append(proxyOpts, proxy.WithBalancer(o.balancer))
@@ -56,28 +58,44 @@ func Init(ctx context.Context, cfg *config.Config, opts ...Option) (*App, error)
 	if o.providerRegistry != nil {
 		proxyOpts = append(proxyOpts, proxy.WithProviderRegistry(o.providerRegistry))
 	}
-	app.Proxy = proxy.NewDefaultProxy(proxyOpts...)
+	s.Proxy = proxy.NewDefaultProxy(proxyOpts...)
 
 	// ③ 构建 HTTP Server
-	httpServer, err := buildHTTPServer(cfg, pm, app.Proxy)
+	httpServer, err := buildHTTPServer(cfg, pm, s.Proxy)
 	if err != nil {
 		return nil, fmt.Errorf("构建 HTTP Server 失败: %w", err)
 	}
-	app.HTTPServer = httpServer
+	s.httpServer = httpServer
 
-	return app, nil
+	// ④ 构建 Kratos App
+	s.kratosApp = kratos.New(
+		kratos.Name("lumin-proxy"),
+		kratos.Server(s.httpServer),
+		kratos.AfterStop(func(ctx context.Context) error {
+			log.Info("正在关闭插件...")
+			return s.Shutdown(ctx)
+		}),
+	)
+
+	return s, nil
+}
+
+// Run 启动服务（阻塞直到收到终止信号或出错）。
+func (s *Server) Run() error {
+	log.Infof("lumin-proxy 已启动, address=%s", s.Config.Server.Address)
+	return s.kratosApp.Run()
 }
 
 // Shutdown 优雅关闭所有组件。
-func (a *App) Shutdown(ctx context.Context) error {
-	if a.PluginManager != nil {
-		a.PluginManager.CloseAll(ctx)
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.PluginManager != nil {
+		s.PluginManager.CloseAll(ctx)
 	}
 	return nil
 }
 
 // buildHTTPServer 根据配置构建 Kratos HTTP Server。
-func buildHTTPServer(cfg *config.Config, pm *plugin.Manager, p proxy.Proxy) (*kratoshttp.Server, error) {
+func buildHTTPServer(cfg *config.Config, pm plugin.LifecycleManager, p proxy.Proxy) (*kratoshttp.Server, error) {
 	// 收集插件提供的 HTTP 中间件
 	var filters []kratoshttp.FilterFunc
 	for _, mw := range pm.HTTPMiddlewares() {
@@ -113,7 +131,7 @@ func registerRoutes(srv *kratoshttp.Server, cfg *config.Config, p proxy.Proxy) {
 
 		adapter, ok := protocol.GetAdapter(protoCfg.Name)
 		if !ok {
-			slog.Warn("协议适配器未注册，跳过", "name", protoCfg.Name)
+			log.Warnf("协议适配器未注册，跳过: name=%s", protoCfg.Name)
 			continue
 		}
 
@@ -123,19 +141,20 @@ func registerRoutes(srv *kratoshttp.Server, cfg *config.Config, p proxy.Proxy) {
 			prefix = "/" + protoCfg.Name
 		}
 
-		// 注册 chat completions 路由
-		switch protoCfg.Name {
-		case "openai":
-			srv.Handle(prefix+"/chat/completions", h)
-			srv.HandleFunc(prefix+"/models", func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				w.Write([]byte(`{"object":"list","data":[]}`))
-			})
-		default:
-			srv.HandlePrefix(prefix, h)
+		// 由适配器声明路由规则
+		for _, route := range adapter.Routes(h) {
+			routeHandler := route.Handler
+			if routeHandler == nil {
+				routeHandler = h
+			}
+			if route.IsPrefix {
+				srv.HandlePrefix(prefix+route.Pattern, routeHandler)
+			} else {
+				srv.Handle(prefix+route.Pattern, routeHandler)
+			}
 		}
 
-		slog.Info("注册协议路由", "protocol", protoCfg.Name, "prefix", prefix)
+		log.Infof("注册协议路由: protocol=%s, prefix=%s", protoCfg.Name, prefix)
 	}
 
 	// 健康检查
@@ -152,7 +171,7 @@ func recoveryFilter() kratoshttp.FilterFunc {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if err := recover(); err != nil {
-					slog.Error("请求处理 panic", "error", err, "path", r.URL.Path)
+					log.Errorf("请求处理 panic: error=%v, path=%s", err, r.URL.Path)
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusInternalServerError)
 					w.Write([]byte(`{"error":{"message":"Internal Server Error","type":"internal_error"}}`))

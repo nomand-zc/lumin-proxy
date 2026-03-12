@@ -3,11 +3,11 @@ package plugin
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/nomand-zc/lumin-client/log"
 	"gopkg.in/yaml.v3"
 )
 
@@ -50,7 +50,7 @@ func (m *Manager) SetupAll(ctx context.Context, configs map[string]yaml.Node) er
 	for name, cfgNode := range configs {
 		f, ok := Get(name)
 		if !ok {
-			slog.Warn("插件未注册，跳过", "name", name)
+		log.Warnf("插件未注册，跳过: name=%s", name)
 			continue
 		}
 
@@ -87,7 +87,7 @@ func (m *Manager) SetupAll(ctx context.Context, configs map[string]yaml.Node) er
 			}
 		}
 
-		slog.Info("插件初始化完成", "name", name, "type", f.Type())
+		log.Infof("插件初始化完成: name=%s, type=%s", name, f.Type())
 	}
 
 	return nil
@@ -173,9 +173,9 @@ func (m *Manager) CloseAll(ctx context.Context) error {
 		p := m.initialized[i]
 		if closer, ok := p.factory.(Closer); ok {
 			if err := closer.Close(ctx); err != nil {
-				slog.Error("关闭插件失败", "name", p.name, "error", err)
+				log.Errorf("关闭插件失败: name=%s, error=%v", p.name, err)
 			} else {
-				slog.Info("插件已关闭", "name", p.name)
+				log.Infof("插件已关闭: name=%s", p.name)
 			}
 		}
 	}
@@ -197,10 +197,10 @@ func (m *Manager) ReloadAll(ctx context.Context, configs map[string]yaml.Node) e
 			continue
 		}
 		if err := reloadable.Reload(ctx, &YamlNodeDecoder{Node: &cfgNode}); err != nil {
-			slog.Error("热更新插件失败", "name", p.name, "error", err)
+		log.Errorf("热更新插件失败: name=%s, error=%v", p.name, err)
 			return fmt.Errorf("热更新插件 %q 失败: %w", p.name, err)
 		}
-		slog.Info("插件热更新完成", "name", p.name)
+		log.Infof("插件热更新完成: name=%s", p.name)
 	}
 
 	// 重新收集钩子

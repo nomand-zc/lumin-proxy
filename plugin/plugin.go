@@ -62,6 +62,29 @@ type HTTPMiddlewareProvider interface {
 	HTTPMiddleware() func(http.Handler) http.Handler
 }
 
+// HookRunner 钩子运行器接口，定义了插件钩子的执行行为。
+// 代理核心层通过此接口与插件系统交互，而不直接依赖 Manager 实现。
+type HookRunner interface {
+	// RunBeforeRequest 按顺序执行所有 BeforeRequest 钩子。
+	RunBeforeRequest(ctx context.Context, req *RequestInfo) (context.Context, error)
+	// RunAfterResponse 按顺序执行所有 AfterResponse 钩子。
+	RunAfterResponse(ctx context.Context, req *RequestInfo, resp *ResponseInfo, err error)
+	// RunOnStreamChunk 按顺序执行所有 OnStreamChunk 钩子。
+	RunOnStreamChunk(ctx context.Context, req *RequestInfo, chunk *ResponseInfo)
+}
+
+// LifecycleManager 插件生命周期管理接口，定义了插件的初始化、关闭和中间件获取等行为。
+// Server 层通过此接口与插件系统交互。
+type LifecycleManager interface {
+	HookRunner
+	// HTTPMiddlewares 返回所有插件提供的 HTTP 中间件。
+	HTTPMiddlewares() []func(http.Handler) http.Handler
+	// HasPlugins 返回是否有已初始化的插件。
+	HasPlugins() bool
+	// CloseAll 按逆序关闭所有实现了 Closer 接口的插件。
+	CloseAll(ctx context.Context) error
+}
+
 // Hooks 钩子函数集合。
 type Hooks struct {
 	// BeforeRequest 请求前置钩子
