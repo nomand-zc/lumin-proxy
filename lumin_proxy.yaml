@@ -1,0 +1,28 @@
+# lumin-proxy 配置文件
+# 基于 Kratos 框架 + trpc-go 插件思想
+
+server:
+  address: ":8080"
+  read_timeout: 30s
+  write_timeout: 120s   # 流式响应需要较长超时
+  idle_timeout: 120s
+
+proxy:
+  protocols:
+    - name: openai
+      enable: true
+      prefix: /v1
+
+plugins:
+  auth:
+    enabled: true
+    keys:
+      - "sk-lumin-test-key-001"
+      - "sk-lumin-test-key-002"
+
+admin:
+  enable: true
+  address: ":8081"
+
+log:
+  level: info
