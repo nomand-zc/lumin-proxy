@@ -6,8 +6,8 @@ import (
 	"os"
 
 	"github.com/nomand-zc/lumin-client/log"
+	"github.com/nomand-zc/lumin-proxy/app"
 	"github.com/nomand-zc/lumin-proxy/config"
-	"github.com/nomand-zc/lumin-proxy/server"
 
 	// 通过 init() 注册协议适配器
 	_ "github.com/nomand-zc/lumin-proxy/protocol/openai"
@@ -41,15 +41,15 @@ func main() {
 
 	ctx := context.Background()
 
-	// ② 创建 Server 实例（初始化所有依赖）
-	srv, err := server.New(ctx, cfg)
+	// ② 创建 App 实例（初始化所有依赖）
+	application, err := app.New(ctx, cfg)
 	if err != nil {
 		log.Errorf("初始化服务失败: %v", err)
 		os.Exit(1)
 	}
 
 	// ③ 启动服务
-	if err := srv.Run(); err != nil {
+	if err := application.Run(); err != nil {
 		log.Errorf("服务运行错误: %v", err)
 		os.Exit(1)
 	}

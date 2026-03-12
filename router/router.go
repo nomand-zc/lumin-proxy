@@ -1,14 +1,68 @@
-// Package handler 提供了将协议适配器和代理核心层连接起来的 HTTP Handler。
-package handler
+// Package router 独立管理路由注册逻辑。
+// 将协议适配器与代理核心层通过路由连接起来，支持插件的路由级钩子扩展。
+package router
 
 import (
 	"context"
 	"net/http"
 
+	kratoshttp "github.com/go-kratos/kratos/v2/transport/http"
+
 	"github.com/nomand-zc/lumin-client/log"
+	"github.com/nomand-zc/lumin-proxy/config"
+	"github.com/nomand-zc/lumin-proxy/plugin"
 	"github.com/nomand-zc/lumin-proxy/protocol"
 	"github.com/nomand-zc/lumin-proxy/proxy"
 )
+
+// Register 根据配置注册所有协议路由到 HTTP Server。
+// 支持通过 PluginManager 的路由级钩子进行扩展。
+func Register(srv *kratoshttp.Server, cfg *config.Config, p proxy.Proxy, pm plugin.LifecycleManager) {
+	for _, protoCfg := range cfg.Proxy.Protocols {
+		if !protoCfg.Enable {
+			continue
+		}
+
+		adapter, ok := protocol.GetAdapter(protoCfg.Name)
+		if !ok {
+			log.Warnf("协议适配器未注册，跳过: name=%s", protoCfg.Name)
+			continue
+		}
+
+		h := NewProxyHandler(adapter, p)
+		prefix := protoCfg.Prefix
+		if prefix == "" {
+			prefix = "/" + protoCfg.Name
+		}
+
+		// 触发路由级钩子（如果插件管理器支持）
+		if rp, ok := pm.(plugin.RouteHookProvider); ok {
+			rp.RunOnRouteRegister(protoCfg.Name, prefix)
+		}
+
+		// 由适配器声明路由规则
+		for _, route := range adapter.Routes(h) {
+			routeHandler := route.Handler
+			if routeHandler == nil {
+				routeHandler = h
+			}
+			if route.IsPrefix {
+				srv.HandlePrefix(prefix+route.Pattern, routeHandler)
+			} else {
+				srv.Handle(prefix+route.Pattern, routeHandler)
+			}
+		}
+
+		log.Infof("注册协议路由: protocol=%s, prefix=%s", protoCfg.Name, prefix)
+	}
+
+	// 健康检查
+	srv.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status":"ok"}`))
+	})
+}
 
 // ProxyHandler 将协议适配器与代理核心层连接起来的 HTTP Handler。
 type ProxyHandler struct {

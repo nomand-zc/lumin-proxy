@@ -23,9 +23,10 @@ type Manager struct {
 	initialized []initializedPlugin
 
 	// 钩子链
-	beforeRequest []BeforeRequestHook
-	afterResponse []AfterResponseHook
-	onStreamChunk []OnStreamChunkHook
+	beforeRequest   []BeforeRequestHook
+	afterResponse   []AfterResponseHook
+	onStreamChunk   []OnStreamChunkHook
+	onRouteRegister []OnRouteRegisterHook
 
 	// HTTP 中间件
 	httpMiddlewares []func(http.Handler) http.Handler
@@ -78,6 +79,9 @@ func (m *Manager) SetupAll(ctx context.Context, configs config.PluginConfigs) er
 				}
 				if hooks.OnStreamChunk != nil {
 					m.onStreamChunk = append(m.onStreamChunk, hooks.OnStreamChunk)
+				}
+				if hooks.OnRouteRegister != nil {
+					m.onRouteRegister = append(m.onRouteRegister, hooks.OnRouteRegister)
 				}
 			}
 		}
@@ -150,6 +154,18 @@ func (m *Manager) RunOnStreamChunk(ctx context.Context, req *RequestInfo, chunk 
 	}
 }
 
+// RunOnRouteRegister 按顺序执行所有 OnRouteRegister 钩子。
+// 实现 RouteHookProvider 接口。
+func (m *Manager) RunOnRouteRegister(protocolName string, prefix string) {
+	m.mu.RLock()
+	hooks := m.onRouteRegister
+	m.mu.RUnlock()
+
+	for _, hook := range hooks {
+		hook(protocolName, prefix)
+	}
+}
+
 // HTTPMiddlewares 返回所有插件提供的 HTTP 中间件。
 func (m *Manager) HTTPMiddlewares() []func(http.Handler) http.Handler {
 	m.mu.RLock()
@@ -210,6 +226,7 @@ func (m *Manager) ReloadAll(ctx context.Context, configs config.PluginConfigs) e
 	m.beforeRequest = m.beforeRequest[:0]
 	m.afterResponse = m.afterResponse[:0]
 	m.onStreamChunk = m.onStreamChunk[:0]
+	m.onRouteRegister = m.onRouteRegister[:0]
 	m.httpMiddlewares = m.httpMiddlewares[:0]
 
 	for _, p := range m.initialized {
@@ -224,6 +241,9 @@ func (m *Manager) ReloadAll(ctx context.Context, configs config.PluginConfigs) e
 				}
 				if hooks.OnStreamChunk != nil {
 					m.onStreamChunk = append(m.onStreamChunk, hooks.OnStreamChunk)
+				}
+				if hooks.OnRouteRegister != nil {
+					m.onRouteRegister = append(m.onRouteRegister, hooks.OnRouteRegister)
 				}
 			}
 		}

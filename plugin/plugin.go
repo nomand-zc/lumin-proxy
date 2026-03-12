@@ -93,6 +93,8 @@ type Hooks struct {
 	AfterResponse AfterResponseHook
 	// OnStreamChunk 流式 chunk 钩子
 	OnStreamChunk OnStreamChunkHook
+	// OnRouteRegister 路由注册钩子（可选，用于在路由注册时执行自定义逻辑）
+	OnRouteRegister OnRouteRegisterHook
 }
 
 // BeforeRequestHook 请求前置钩子类型。
