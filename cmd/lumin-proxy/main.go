@@ -11,6 +11,7 @@ import (
 	"github.com/nomand-zc/lumin-proxy/config"
 
 	// 通过 init() 注册协议适配器
+	_ "github.com/nomand-zc/lumin-proxy/protocol/anthropic"
 	_ "github.com/nomand-zc/lumin-proxy/protocol/openai"
 
 	// 通过 init() 注册内置插件

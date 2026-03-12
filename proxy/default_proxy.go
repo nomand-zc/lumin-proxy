@@ -59,6 +59,12 @@ func NewDefaultProxy(opts ...DefaultProxyOption) *DefaultProxy {
 	for _, opt := range opts {
 		opt(p)
 	}
+
+	// 检查依赖是否已配置
+	if p.balancer == nil {
+		panic("balancer not configured")
+	}
+
 	return p
 }
 
@@ -116,7 +122,7 @@ func (p *DefaultProxy) HandleStream(ctx context.Context, req *protocol.Request) 
 	}
 
 	// 包装流：注入钩子 + 自动 Report
-	wrappedStream := newHookedStream(ctx, stream, p.hookRunner, p.balancer, reqInfo, pickResult)
+	wrappedStream := p.newHookedStream(ctx, stream, reqInfo, pickResult)
 
 	return &StreamResult{
 		Stream:       wrappedStream,
@@ -138,14 +144,6 @@ func (p *DefaultProxy) prepare(ctx context.Context, req *protocol.Request) (
 		if err != nil {
 			return ctx, nil, nil, nil, err
 		}
-	}
-
-	// 检查依赖是否已配置
-	if p.balancer == nil {
-		return ctx, nil, nil, nil, errs.New(errs.CodeInternal, "Balancer 未配置")
-	}
-	if p.providerRegistry == nil {
-		return ctx, nil, nil, nil, errs.New(errs.CodeInternal, "ProviderRegistry 未配置")
 	}
 
 	// ② Pick 账号
@@ -180,19 +178,17 @@ type hookedStream struct {
 	reported   bool
 }
 
-func newHookedStream(
+func (p *DefaultProxy) newHookedStream(
 	ctx context.Context,
 	inner queue.Consumer[*providers.Response],
-	hookRunner plugin.HookRunner,
-	balancer balancer.Balancer,
 	reqInfo *plugin.RequestInfo,
 	pickResult *balancer.PickResult,
 ) *hookedStream {
 	return &hookedStream{
 		ctx:        ctx,
 		inner:      inner,
-		hookRunner: hookRunner,
-		balancer:   balancer,
+		hookRunner: p.hookRunner,
+		balancer:   p.balancer,
 		reqInfo:    reqInfo,
 		pickResult: pickResult,
 	}
@@ -203,21 +199,11 @@ func (s *hookedStream) Closed() bool {
 }
 
 func (s *hookedStream) Pop(ctx context.Context) (*providers.Response, error) {
-	resp, err := s.inner.Pop(ctx)
-	if err != nil {
-		s.doReport(err)
-		return nil, err
-	}
+	return s.inner.Pop(ctx)
+}
 
-	s.lastResp = resp
-	s.processChunk(resp)
-
-	// 最终 chunk 时 Report
-	if resp.Done {
-		s.doReport(nil)
-	}
-
-	return resp, nil
+func (s *hookedStream) Len() int {
+	return s.inner.Len()
 }
 
 func (s *hookedStream) Each(ctx context.Context, fn func(*providers.Response) error) error {
@@ -231,10 +217,6 @@ func (s *hookedStream) Each(ctx context.Context, fn func(*providers.Response) er
 
 		return fn(resp)
 	})
-}
-
-func (s *hookedStream) Len() int {
-	return s.inner.Len()
 }
 
 // processChunk 执行 OnStreamChunk 钩子。

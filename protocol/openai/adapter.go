@@ -44,57 +44,6 @@ func (a *Adapter) Routes(defaultHandler http.Handler) []protocol.Route {
 	}
 }
 
-// --- 请求类型定义 ---
-
-// ChatCompletionRequest OpenAI Chat Completion 请求体。
-type ChatCompletionRequest struct {
-	Model            string          `json:"model"`
-	Messages         []ChatMessage   `json:"messages"`
-	MaxTokens        *int            `json:"max_tokens,omitempty"`
-	Temperature      *float64        `json:"temperature,omitempty"`
-	TopP             *float64        `json:"top_p,omitempty"`
-	Stream           bool            `json:"stream"`
-	Stop             []string        `json:"stop,omitempty"`
-	PresencePenalty  *float64        `json:"presence_penalty,omitempty"`
-	FrequencyPenalty *float64        `json:"frequency_penalty,omitempty"`
-	Tools            []ChatTool      `json:"tools,omitempty"`
-	ReasoningEffort  *string         `json:"reasoning_effort,omitempty"`
-}
-
-// ChatMessage OpenAI 消息。
-type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content,omitempty"`
-}
-
-// ChatTool OpenAI 工具定义。
-type ChatTool struct {
-	Type     string         `json:"type"`
-	Function ChatToolFunc   `json:"function"`
-}
-
-// ChatToolFunc 工具函数定义。
-type ChatToolFunc struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	Parameters  json.RawMessage `json:"parameters"`
-}
-
-// --- 错误响应类型 ---
-
-// ErrorResponse OpenAI 格式的错误响应。
-type ErrorResponse struct {
-	Error ErrorDetail `json:"error"`
-}
-
-// ErrorDetail 错误详情。
-type ErrorDetail struct {
-	Message string  `json:"message"`
-	Type    string  `json:"type"`
-	Param   *string `json:"param,omitempty"`
-	Code    *string `json:"code,omitempty"`
-}
-
 // ParseRequest 将 OpenAI 格式的 HTTP 请求解析为统一的内部请求。
 func (a *Adapter) ParseRequest(r *http.Request) (*protocol.Request, error) {
 	body, err := io.ReadAll(r.Body)
@@ -112,10 +61,16 @@ func (a *Adapter) ParseRequest(r *http.Request) (*protocol.Request, error) {
 		return nil, errs.New(errs.CodeInvalidRequest, "model 字段不能为空")
 	}
 
+	// 转换消息
+	messages, err := convertMessages(req.Messages)
+	if err != nil {
+		return nil, errs.Wrap(errs.CodeInvalidRequest, "转换消息失败", err)
+	}
+
 	// 转换为 lumin-client 的 providers.Request
 	provReq := providers.Request{
 		Model:    req.Model,
-		Messages: convertMessages(req.Messages),
+		Messages: messages,
 		GenerationConfig: providers.GenerationConfig{
 			MaxTokens:        req.MaxTokens,
 			Temperature:      req.Temperature,
@@ -125,8 +80,18 @@ func (a *Adapter) ParseRequest(r *http.Request) (*protocol.Request, error) {
 			PresencePenalty:   req.PresencePenalty,
 			FrequencyPenalty:  req.FrequencyPenalty,
 			ReasoningEffort:   req.ReasoningEffort,
+			ThinkingEnabled:   req.ThinkingEnabled,
+			ThinkingTokens:    req.ThinkingTokens,
 		},
 		Tools: convertTools(req.Tools),
+	}
+
+	metadata := make(map[string]any)
+	if req.ToolChoice != nil {
+		metadata["tool_choice"] = req.ToolChoice
+	}
+	if req.User != "" {
+		metadata["user"] = req.User
 	}
 
 	return &protocol.Request{
@@ -134,11 +99,12 @@ func (a *Adapter) ParseRequest(r *http.Request) (*protocol.Request, error) {
 		Stream:          req.Stream,
 		ProviderRequest: &provReq,
 		RawBody:         body,
-		Metadata:        make(map[string]any),
+		Metadata:        metadata,
 	}, nil
 }
 
-// WriteResponse 写入非流式响应。
+// WriteResponse 写入非流式响应（转换为 OpenAI Chat Completion 格式）。
+// 参考 trpc-agent-go/model/openai 中 handleNonStreamingResponse 的反向转换逻辑。
 func (a *Adapter) WriteResponse(ctx context.Context, w http.ResponseWriter, resp *providers.Response) error {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -154,11 +120,13 @@ func (a *Adapter) WriteResponse(ctx context.Context, w http.ResponseWriter, resp
 		})
 	}
 
+	oaiResp := buildChatCompletionResponse(resp)
 	w.WriteHeader(http.StatusOK)
-	return json.NewEncoder(w).Encode(resp)
+	return json.NewEncoder(w).Encode(oaiResp)
 }
 
-// WriteStreamResponse 写入 SSE 流式响应。
+// WriteStreamResponse 写入 SSE 流式响应（转换为 OpenAI Chat Completion Chunk 格式）。
+// 参考 trpc-agent-go/model/openai 中 createPartialResponse 的反向转换逻辑。
 func (a *Adapter) WriteStreamResponse(ctx context.Context, w http.ResponseWriter, stream queue.Consumer[*providers.Response]) error {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -176,14 +144,23 @@ func (a *Adapter) WriteStreamResponse(ctx context.Context, w http.ResponseWriter
 	// 逐 chunk 写入
 	err := stream.Each(ctx, func(resp *providers.Response) error {
 		if resp.Error != nil {
-			// 写入错误事件
-			data, _ := json.Marshal(resp)
+			// 写入错误事件（OpenAI 格式）
+			errResp := ErrorResponse{
+				Error: ErrorDetail{
+					Message: resp.Error.Message,
+					Type:    resp.Error.Type,
+					Param:   resp.Error.Param,
+					Code:    resp.Error.Code,
+				},
+			}
+			data, _ := json.Marshal(errResp)
 			fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
 			return nil
 		}
 
-		data, err := json.Marshal(resp)
+		chunkResp := buildChatCompletionChunkResponse(resp)
+		data, err := json.Marshal(chunkResp)
 		if err != nil {
 			return err
 		}
@@ -238,17 +215,243 @@ func (a *Adapter) WriteError(w http.ResponseWriter, err error) {
 	})
 }
 
-// --- 类型转换辅助函数 ---
+// --- 响应转换辅助函数 ---
 
-func convertMessages(msgs []ChatMessage) []providers.Message {
+// buildChatCompletionResponse 将 providers.Response 转换为 OpenAI Chat Completion 格式的响应。
+// 参考 trpc-agent-go handleNonStreamingResponse 中的 response → model.Response 构建逻辑（反向）。
+func buildChatCompletionResponse(resp *providers.Response) *ChatCompletionResponse {
+	oaiResp := &ChatCompletionResponse{
+		ID:                resp.ID,
+		Object:            providers.ObjectChatCompletion,
+		Created:           resp.Created,
+		Model:             resp.Model,
+		SystemFingerprint: resp.SystemFingerprint,
+	}
+
+	// 转换 choices
+	if len(resp.Choices) > 0 {
+		oaiResp.Choices = make([]ChatCompletionChoice, len(resp.Choices))
+		for i, choice := range resp.Choices {
+			msg := choice.Message
+			oaiChoice := ChatCompletionChoice{
+				Index:        choice.Index,
+				FinishReason: choice.FinishReason,
+				Message: ChatCompletionMessage{
+					Role: string(msg.Role),
+				},
+			}
+
+			// content: 使用指针以区分 null 和空字符串
+			if msg.Content != "" {
+				oaiChoice.Message.Content = &msg.Content
+			} else if len(msg.ToolCalls) == 0 {
+				// 没有工具调用时，content 为 null
+				oaiChoice.Message.Content = nil
+			}
+
+			// reasoning_content（DeepSeek / o1 等模型的思考内容）
+			if msg.ReasoningContent != "" {
+				oaiChoice.Message.ReasoningContent = &msg.ReasoningContent
+			}
+
+			// tool_calls
+			if len(msg.ToolCalls) > 0 {
+				oaiChoice.Message.ToolCalls = make([]ChatToolCall, len(msg.ToolCalls))
+				for j, tc := range msg.ToolCalls {
+					oaiChoice.Message.ToolCalls[j] = ChatToolCall{
+						ID:   tc.ID,
+						Type: tc.Type,
+						Function: ChatToolCallFunc{
+							Name:      tc.Function.Name,
+							Arguments: string(tc.Function.Arguments),
+						},
+					}
+				}
+			}
+
+			// 确保 role 有值
+			if oaiChoice.Message.Role == "" {
+				oaiChoice.Message.Role = "assistant"
+			}
+
+			oaiResp.Choices[i] = oaiChoice
+		}
+	}
+
+	// 转换 usage
+	if resp.Usage != nil {
+		oaiResp.Usage = convertUsageToOpenAI(resp.Usage)
+	}
+
+	return oaiResp
+}
+
+// buildChatCompletionChunkResponse 将 providers.Response 转换为 OpenAI Chat Completion Chunk 格式。
+// 参考 trpc-agent-go createPartialResponse 中的 chunk → model.Response 构建逻辑（反向）。
+func buildChatCompletionChunkResponse(resp *providers.Response) *ChatCompletionChunkResponse {
+	// 确定 object 类型
+	object := providers.ObjectChatCompletionChunk
+	if resp.Object != "" {
+		object = resp.Object
+	}
+
+	chunkResp := &ChatCompletionChunkResponse{
+		ID:                resp.ID,
+		Object:            object,
+		Created:           resp.Created,
+		Model:             resp.Model,
+		SystemFingerprint: resp.SystemFingerprint,
+	}
+
+	// 转换 choices
+	if len(resp.Choices) > 0 {
+		chunkResp.Choices = make([]ChatCompletionChunkChoice, len(resp.Choices))
+		for i, choice := range resp.Choices {
+			delta := choice.Delta
+			oaiChoice := ChatCompletionChunkChoice{
+				Index:        choice.Index,
+				FinishReason: choice.FinishReason,
+				Delta: ChatCompletionDelta{
+					Role: string(delta.Role),
+				},
+			}
+
+			// content: 仅在有内容时设置
+			if delta.Content != "" {
+				oaiChoice.Delta.Content = &delta.Content
+			}
+
+			// reasoning_content
+			if delta.ReasoningContent != "" {
+				oaiChoice.Delta.ReasoningContent = &delta.ReasoningContent
+			}
+
+			// tool_calls（流式增量）
+			if len(delta.ToolCalls) > 0 {
+				oaiChoice.Delta.ToolCalls = make([]ChatToolCallDelta, len(delta.ToolCalls))
+				for j, tc := range delta.ToolCalls {
+					oaiChoice.Delta.ToolCalls[j] = ChatToolCallDelta{
+						Index: tc.Index,
+						ID:    tc.ID,
+						Type:  tc.Type,
+						Function: ChatToolCallFunc{
+							Name:      tc.Function.Name,
+							Arguments: string(tc.Function.Arguments),
+						},
+					}
+				}
+			}
+
+			chunkResp.Choices[i] = oaiChoice
+		}
+	}
+
+	// 转换 usage（部分提供者在流式 chunk 中也会包含 usage）
+	if resp.Usage != nil {
+		chunkResp.Usage = convertUsageToOpenAI(resp.Usage)
+	}
+
+	return chunkResp
+}
+
+// convertUsageToOpenAI 将 providers.Usage 转换为 OpenAI 格式的 ChatCompletionUsage。
+// 参考 trpc-agent-go completionUsageToModelUsage 的反向转换。
+func convertUsageToOpenAI(usage *providers.Usage) *ChatCompletionUsage {
+	if usage == nil {
+		return nil
+	}
+	oaiUsage := &ChatCompletionUsage{
+		PromptTokens:     usage.PromptTokens,
+		CompletionTokens: usage.CompletionTokens,
+		TotalTokens:      usage.TotalTokens,
+	}
+	if usage.PromptTokensDetails.CachedTokens > 0 {
+		oaiUsage.PromptTokensDetails = &ChatPromptTokensDetails{
+			CachedTokens: usage.PromptTokensDetails.CachedTokens,
+		}
+	}
+	return oaiUsage
+}
+
+// --- 请求类型转换辅助函数 ---
+
+// convertMessages 将 OpenAI 格式的消息列表转换为 providers.Message 列表。
+// 支持纯文本、多模态（text + image_url）、工具调用、工具响应等场景。
+func convertMessages(msgs []ChatMessage) ([]providers.Message, error) {
 	result := make([]providers.Message, 0, len(msgs))
 	for _, msg := range msgs {
-		result = append(result, providers.Message{
-			Role:    providers.Role(msg.Role),
-			Content: msg.Content,
-		})
+		m, err := convertMessage(msg)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, *m)
 	}
-	return result
+	return result, nil
+}
+
+// convertMessage 将单条 OpenAI 消息转换为 providers.Message。
+func convertMessage(msg ChatMessage) (*providers.Message, error) {
+	m := &providers.Message{
+		Role: providers.Role(msg.Role),
+	}
+
+	// 解析 Content 字段（支持 string 或 []contentPart）
+	if len(msg.Content) > 0 {
+		// 尝试作为 string 解析
+		var strContent string
+		if err := json.Unmarshal(msg.Content, &strContent); err == nil {
+			m.Content = strContent
+		} else {
+			// 尝试作为 []contentPart 解析（多模态）
+			var parts []contentPart
+			if err := json.Unmarshal(msg.Content, &parts); err == nil {
+				for _, part := range parts {
+					switch part.Type {
+					case "text":
+						if part.Text != "" {
+							// 多个 text 块拼接
+							if m.Content == "" {
+								m.Content = part.Text
+							} else {
+								m.Content += "\n" + part.Text
+							}
+						}
+					case "image_url":
+						if part.ImageURL != nil && part.ImageURL.URL != "" {
+							m.AddImageURL(part.ImageURL.URL, part.ImageURL.Detail)
+						}
+					}
+				}
+			}
+			// 如果都解析失败，将原始内容作为字符串使用
+			if m.Content == "" && len(m.ContentParts) == 0 {
+				m.Content = string(msg.Content)
+			}
+		}
+	}
+
+	// 处理 tool_calls（assistant 消息中的工具调用）
+	if len(msg.ToolCalls) > 0 {
+		m.ToolCalls = make([]providers.ToolCall, 0, len(msg.ToolCalls))
+		for _, tc := range msg.ToolCalls {
+			m.ToolCalls = append(m.ToolCalls, providers.ToolCall{
+				ID:   tc.ID,
+				Type: tc.Type,
+				Function: providers.FunctionDefinitionParam{
+					Name:      tc.Function.Name,
+					Arguments: []byte(tc.Function.Arguments),
+				},
+			})
+		}
+	}
+
+	// 处理 tool 消息的 tool_call_id 和 name
+	if msg.ToolCallID != "" {
+		m.ToolID = msg.ToolCallID
+		m.ToolName = msg.Name
+	}
+
+	return m, nil
 }
 
 func convertTools(tools []ChatTool) []providers.Tool {
