@@ -3,6 +3,7 @@
 package http
 
 import (
+	"net"
 	"net/http"
 	"time"
 
@@ -19,6 +20,8 @@ type ServerConfig struct {
 	WriteTimeout time.Duration
 	// Filters HTTP 过滤器（中间件）列表
 	Filters []kratoshttp.FilterFunc
+	// Listener 外部传入的监听器（用于优雅重启场景，为 nil 时由 Server 自行监听）
+	Listener net.Listener
 }
 
 // NewServer 根据配置创建 Kratos HTTP Server 实例。
@@ -26,6 +29,11 @@ type ServerConfig struct {
 func NewServer(cfg ServerConfig) *kratoshttp.Server {
 	opts := []kratoshttp.ServerOption{
 		kratoshttp.Address(cfg.Address),
+	}
+
+	// 如果提供了外部 Listener，则使用它（优雅重启场景）
+	if cfg.Listener != nil {
+		opts = append(opts, kratoshttp.Listener(cfg.Listener))
 	}
 
 	// 添加中间件
