@@ -11,10 +11,8 @@ import (
 )
 
 // ProviderRegistry 是获取 Provider 实例的接口。
-type ProviderRegistry interface {
-	// GetProvider 根据 providerType + providerName 获取 Provider 实例。
-	GetProvider(providerType, providerName string) (providers.Provider, error)
-}
+
+type ProviderRegistry func (providerType, providerName string) (providers.Provider, error)
 
 // Proxy 是代理核心接口。
 type Proxy interface {

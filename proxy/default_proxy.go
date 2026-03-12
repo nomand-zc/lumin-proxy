@@ -47,7 +47,15 @@ func WithHookRunner(hr plugin.HookRunner) DefaultProxyOption {
 
 // NewDefaultProxy 创建默认代理实例。
 func NewDefaultProxy(opts ...DefaultProxyOption) *DefaultProxy {
-	p := &DefaultProxy{}
+	p := &DefaultProxy{
+		providerRegistry: func (providerType, providerName string)(providers.Provider, error) {
+			provider := providers.GetProvider(providerType, providerName)
+			if provider == nil {
+				return nil, fmt.Errorf("provider %s/%s not found", providerType, providerName)
+			}
+			return provider, nil
+		},
+	}
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -152,7 +160,7 @@ func (p *DefaultProxy) prepare(ctx context.Context, req *protocol.Request) (
 	}
 
 	// ③ 获取 Provider 实例
-	provider, err := p.providerRegistry.GetProvider(pickResult.ProviderKey.Type, pickResult.ProviderKey.Name)
+	provider, err := p.providerRegistry(pickResult.ProviderKey.Type, pickResult.ProviderKey.Name)
 	if err != nil {
 		return ctx, nil, nil, nil, errs.Wrap(errs.CodeInternal, "获取 Provider 失败", err)
 	}
