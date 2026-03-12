@@ -11,6 +11,7 @@ import (
 	kratoshttp "github.com/go-kratos/kratos/v2/transport/http"
 
 	"github.com/nomand-zc/lumin-client/log"
+	"github.com/nomand-zc/lumin-proxy/acpool"
 	"github.com/nomand-zc/lumin-proxy/config"
 	"github.com/nomand-zc/lumin-proxy/handler"
 	"github.com/nomand-zc/lumin-proxy/plugin"
@@ -25,6 +26,7 @@ type Server struct {
 	kratosApp     *kratos.App
 	PluginManager plugin.LifecycleManager
 	Proxy         proxy.Proxy
+	acpoolDeps    *acpool.Dependencies // 账号池依赖（由配置驱动自动构建）
 }
 
 // New 根据配置初始化所有依赖，返回 Server 实例。
@@ -48,12 +50,21 @@ func New(ctx context.Context, cfg *config.Config, opts ...Option) (*Server, erro
 	}
 	s.PluginManager = pm
 
-	// ② 初始化代理核心层
+	// ② 从配置自动构建 acpool 依赖（Balancer + Storage）
 	proxyOpts := []proxy.DefaultProxyOption{
 		proxy.WithHookRunner(pm),
 	}
 	if o.balancer != nil {
+		// Option 优先级最高（向后兼容 + 测试 mock）
 		proxyOpts = append(proxyOpts, proxy.WithBalancer(o.balancer))
+	} else {
+		// 配置驱动：自动构建 Balancer
+		deps, err := acpool.Build(cfg.ACPool)
+		if err != nil {
+			return nil, fmt.Errorf("初始化 acpool 失败: %w", err)
+		}
+		s.acpoolDeps = deps
+		proxyOpts = append(proxyOpts, proxy.WithBalancer(deps.Balancer))
 	}
 	if o.providerRegistry != nil {
 		proxyOpts = append(proxyOpts, proxy.WithProviderRegistry(o.providerRegistry))
@@ -72,7 +83,7 @@ func New(ctx context.Context, cfg *config.Config, opts ...Option) (*Server, erro
 		kratos.Name("lumin-proxy"),
 		kratos.Server(s.httpServer),
 		kratos.AfterStop(func(ctx context.Context) error {
-			log.Info("正在关闭插件...")
+			log.Info("正在关闭服务...")
 			return s.Shutdown(ctx)
 		}),
 	)
@@ -91,7 +102,19 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.PluginManager != nil {
 		s.PluginManager.CloseAll(ctx)
 	}
+	// 释放 acpool 资源（如数据库连接、Redis 连接等）
+	if s.acpoolDeps != nil {
+		if err := s.acpoolDeps.Close(); err != nil {
+			log.Errorf("关闭 acpool 资源失败: %v", err)
+		}
+	}
 	return nil
+}
+
+// ACPoolDeps 返回 acpool 依赖实例（供 admin API 等外部模块访问 Storage）。
+// 如果 Balancer 是通过 Option 外部注入的，返回 nil。
+func (s *Server) ACPoolDeps() *acpool.Dependencies {
+	return s.acpoolDeps
 }
 
 // buildHTTPServer 根据配置构建 Kratos HTTP Server。

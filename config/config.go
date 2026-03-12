@@ -14,6 +14,8 @@ type Config struct {
 	Server ServerConfig `yaml:"server"`
 	// Proxy 代理核心配置
 	Proxy ProxyConfig `yaml:"proxy"`
+	// ACPool 账号池配置（lumin-acpool）
+	ACPool ACPoolConfig `yaml:"acpool"`
 	// Plugins 插件配置列表
 	Plugins PluginConfigs `yaml:"plugins"`
 	// Admin 运维接口配置
@@ -155,4 +157,93 @@ func (c *Config) setDefaults() {
 	if c.Admin.Address == "" {
 		c.Admin.Address = ":8081"
 	}
+}
+
+// --- ACPool 配置结构体 ---
+
+// ACPoolConfig 账号池（lumin-acpool）配置。
+// 通过配置驱动自动构建 Balancer 及其全部依赖组件。
+type ACPoolConfig struct {
+	// Storage 存储驱动配置
+	Storage StorageDriverConfig `yaml:"storage"`
+	// Balancer 负载均衡行为配置
+	Balancer BalancerConfig `yaml:"balancer"`
+}
+
+// StorageDriverConfig 存储驱动配置。
+type StorageDriverConfig struct {
+	// Driver 存储驱动类型: "memory" | "mysql" | "sqlite" | "redis"
+	Driver string `yaml:"driver"`
+	// DSN 数据源名称（MySQL/SQLite 场景使用）
+	DSN string `yaml:"dsn"`
+	// MaxOpenConns 最大打开连接数（MySQL 场景使用）
+	MaxOpenConns int `yaml:"max_open_conns"`
+	// MaxIdleConns 最大空闲连接数（MySQL 场景使用）
+	MaxIdleConns int `yaml:"max_idle_conns"`
+	// Addr Redis 地址（Redis 场景使用）
+	Addr string `yaml:"addr"`
+	// Password Redis 密码（Redis 场景使用）
+	Password string `yaml:"password"`
+	// DB Redis 数据库编号（Redis 场景使用）
+	DB int `yaml:"db"`
+}
+
+// BalancerConfig Balancer 行为配置。
+type BalancerConfig struct {
+	// Selector 账号级选择策略: "round_robin" | "priority" | "weighted" | "least_used" | "affinity"
+	Selector string `yaml:"selector"`
+	// GroupSelector 供应商级选择策略: "group_priority" | "group_round_robin" | "group_weighted" | "group_most_available" | "group_affinity"
+	GroupSelector string `yaml:"group_selector"`
+	// Occupancy 占用控制策略配置
+	Occupancy OccupancyConfig `yaml:"occupancy"`
+	// CircuitBreaker 熔断器配置（nil 表示不启用）
+	CircuitBreaker *CBConfig `yaml:"circuit_breaker"`
+	// Cooldown 冷却管理器配置（nil 表示不启用）
+	Cooldown *CooldownConfig `yaml:"cooldown"`
+	// UsageTracker 用量追踪器配置（nil 表示不启用）
+	UsageTracker *UTConfig `yaml:"usage_tracker"`
+	// DefaultMaxRetries 默认最大重试次数
+	DefaultMaxRetries int `yaml:"default_max_retries"`
+	// DefaultEnableFailover 是否默认启用故障转移
+	DefaultEnableFailover bool `yaml:"default_enable_failover"`
+}
+
+// OccupancyConfig 占用控制策略配置。
+type OccupancyConfig struct {
+	// Strategy 策略类型: "unlimited" | "fixed_limit" | "adaptive_limit"
+	Strategy string `yaml:"strategy"`
+	// DefaultLimit 固定并发上限（fixed_limit 专用）
+	DefaultLimit int64 `yaml:"default_limit"`
+	// Factor 调控因子（adaptive_limit 专用，默认 1.0）
+	Factor float64 `yaml:"factor"`
+	// MinLimit 最小并发上限（adaptive_limit 专用，默认 1）
+	MinLimit int64 `yaml:"min_limit"`
+	// MaxLimit 最大并发上限（adaptive_limit 专用，默认 0 不限制）
+	MaxLimit int64 `yaml:"max_limit"`
+	// FallbackLimit 回退并发上限（adaptive_limit 专用，默认 1）
+	FallbackLimit int64 `yaml:"fallback_limit"`
+}
+
+// CBConfig 熔断器配置。
+type CBConfig struct {
+	// DefaultThreshold 默认连续失败阈值
+	DefaultThreshold int `yaml:"default_threshold"`
+	// DefaultTimeout 默认熔断恢复超时时间
+	DefaultTimeout time.Duration `yaml:"default_timeout"`
+	// ThresholdRatio 动态阈值比例（默认 0.5）
+	ThresholdRatio float64 `yaml:"threshold_ratio"`
+	// MinThreshold 最小阈值（默认 3）
+	MinThreshold int `yaml:"min_threshold"`
+}
+
+// CooldownConfig 冷却管理器配置。
+type CooldownConfig struct {
+	// DefaultDuration 默认冷却时长
+	DefaultDuration time.Duration `yaml:"default_duration"`
+}
+
+// UTConfig 用量追踪器配置。
+type UTConfig struct {
+	// SafetyRatio 安全阈值比例（0.0 ~ 1.0，默认 0.95）
+	SafetyRatio float64 `yaml:"safety_ratio"`
 }
