@@ -17,6 +17,7 @@ type ChatCompletionRequest struct {
 	FrequencyPenalty *float64      `json:"frequency_penalty,omitempty"`
 	Tools            []ChatTool    `json:"tools,omitempty"`
 	ToolChoice       any           `json:"tool_choice,omitempty"`
+	ResponseFormat   any           `json:"response_format,omitempty"`
 	ReasoningEffort  *string       `json:"reasoning_effort,omitempty"`
 	ThinkingEnabled  *bool         `json:"thinking_enabled,omitempty"`
 	ThinkingTokens   *int          `json:"thinking_tokens,omitempty"`

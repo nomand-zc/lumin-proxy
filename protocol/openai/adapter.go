@@ -90,9 +90,15 @@ func (a *Adapter) ParseRequest(r *http.Request) (*protocol.Request, error) {
 	if req.ToolChoice != nil {
 		metadata["tool_choice"] = req.ToolChoice
 	}
+	if req.ResponseFormat != nil {
+		metadata["response_format"] = req.ResponseFormat
+	}
 	if req.User != "" {
 		metadata["user"] = req.User
 	}
+
+	// 将 metadata 也传递给 providerRequest
+	provReq.Metadata = metadata
 
 	return &protocol.Request{
 		Model:           req.Model,
@@ -365,9 +371,14 @@ func convertUsageToOpenAI(usage *providers.Usage) *ChatCompletionUsage {
 		CompletionTokens: usage.CompletionTokens,
 		TotalTokens:      usage.TotalTokens,
 	}
-	if usage.PromptTokensDetails.CachedTokens > 0 {
+	// CachedTokens 和 CacheReadTokens 都转换到 OpenAI 的 prompt_tokens_details.cached_tokens
+	cachedTokens := usage.PromptTokensDetails.CachedTokens
+	if usage.PromptTokensDetails.CacheReadTokens > cachedTokens {
+		cachedTokens = usage.PromptTokensDetails.CacheReadTokens
+	}
+	if cachedTokens > 0 {
 		oaiUsage.PromptTokensDetails = &ChatPromptTokensDetails{
-			CachedTokens: usage.PromptTokensDetails.CachedTokens,
+			CachedTokens: cachedTokens,
 		}
 	}
 	return oaiUsage
