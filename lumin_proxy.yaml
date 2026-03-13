@@ -36,7 +36,7 @@ acpool:
     # 驱动类型: memory | mysql | sqlite | redis
     driver: "sqlite"
     # SQLite 数据库文件路径
-    dsn: "./data/acpool.db"
+    dsn: "/data/lumin/acpool.db"
 
   # ---------- 负载均衡器配置 ----------
   balancer:

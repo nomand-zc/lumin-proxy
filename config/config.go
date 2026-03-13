@@ -174,18 +174,15 @@ type ACPoolConfig struct {
 type StorageDriverConfig struct {
 	// Driver 存储驱动类型: "memory" | "mysql" | "sqlite" | "redis"
 	Driver string `yaml:"driver"`
-	// DSN 数据源名称（MySQL/SQLite 场景使用）
+	// DSN 数据源名称，统一使用 DSN 格式配置所有存储驱动
+	// MySQL 示例: "user:password@tcp(127.0.0.1:3306)/dbname?parseTime=true"
+	// SQLite 示例: "./data/acpool.db"
+	// Redis 示例: "redis://:password@127.0.0.1:6379/0"
 	DSN string `yaml:"dsn"`
 	// MaxOpenConns 最大打开连接数（MySQL 场景使用）
 	MaxOpenConns int `yaml:"max_open_conns"`
 	// MaxIdleConns 最大空闲连接数（MySQL 场景使用）
 	MaxIdleConns int `yaml:"max_idle_conns"`
-	// Addr Redis 地址（Redis 场景使用）
-	Addr string `yaml:"addr"`
-	// Password Redis 密码（Redis 场景使用）
-	Password string `yaml:"password"`
-	// DB Redis 数据库编号（Redis 场景使用）
-	DB int `yaml:"db"`
 }
 
 // BalancerConfig Balancer 行为配置。

@@ -20,6 +20,28 @@ import (
 	"github.com/nomand-zc/lumin-acpool/storage/memory/statsstore"
 	"github.com/nomand-zc/lumin-acpool/storage/memory/usagestore"
 	"github.com/nomand-zc/lumin-acpool/usagetracker"
+
+	// MySQL stores + client
+	storeMysql "github.com/nomand-zc/lumin-acpool/storage/mysql"
+	mysqlAccountStore "github.com/nomand-zc/lumin-acpool/storage/mysql/accountstore"
+	mysqlProviderStore "github.com/nomand-zc/lumin-acpool/storage/mysql/providerstore"
+	mysqlStatsStore "github.com/nomand-zc/lumin-acpool/storage/mysql/statsstore"
+	mysqlUsageStore "github.com/nomand-zc/lumin-acpool/storage/mysql/usagestore"
+
+	// Redis stores + client
+	storeRedis "github.com/nomand-zc/lumin-acpool/storage/redis"
+	redisAccountStore "github.com/nomand-zc/lumin-acpool/storage/redis/accountstore"
+	redisProviderStore "github.com/nomand-zc/lumin-acpool/storage/redis/providerstore"
+	redisStatsStore "github.com/nomand-zc/lumin-acpool/storage/redis/statsstore"
+	redisUsageStore "github.com/nomand-zc/lumin-acpool/storage/redis/usagestore"
+
+	// SQLite stores + client
+	storeSqlite "github.com/nomand-zc/lumin-acpool/storage/sqlite"
+	sqliteAccountStore "github.com/nomand-zc/lumin-acpool/storage/sqlite/accountstore"
+	sqliteProviderStore "github.com/nomand-zc/lumin-acpool/storage/sqlite/providerstore"
+	sqliteStatsStore "github.com/nomand-zc/lumin-acpool/storage/sqlite/statsstore"
+	sqliteUsageStore "github.com/nomand-zc/lumin-acpool/storage/sqlite/usagestore"
+
 	"github.com/nomand-zc/lumin-proxy/config"
 )
 
@@ -154,17 +176,103 @@ func (d *Dependencies) buildStorage(cfg config.StorageDriverConfig) error {
 		d.usageStore = usagestore.NewMemoryUsageStore()
 		return nil
 	case "mysql":
-		// TODO: 根据 cfg.DSN 构建 MySQL 存储实现
-		return fmt.Errorf("acpool: mysql 存储驱动暂未实现")
+		return d.buildMySQLStorage(cfg)
 	case "sqlite":
-		// TODO: 根据 cfg.DSN 构建 SQLite 存储实现
-		return fmt.Errorf("acpool: sqlite 存储驱动暂未实现")
+		return d.buildSQLiteStorage(cfg)
 	case "redis":
-		// TODO: 根据 cfg.Addr 构建 Redis 存储实现
-		return fmt.Errorf("acpool: redis 存储驱动暂未实现")
+		return d.buildRedisStorage(cfg)
 	default:
 		return fmt.Errorf("acpool: 不支持的存储驱动: %s", cfg.Driver)
 	}
+}
+
+const defaultInstanceName = "default"
+
+// buildMySQLStorage 注册 MySQL 实例并初始化所有 store。
+func (d *Dependencies) buildMySQLStorage(cfg config.StorageDriverConfig) error {
+	storeMysql.RegisterInstance(defaultInstanceName, storeMysql.WithClientBuilderDSN(cfg.DSN))
+
+	var err error
+
+	d.AccountStorage, err = mysqlAccountStore.NewStore(mysqlAccountStore.WithInstanceName(defaultInstanceName))
+	if err != nil {
+		return fmt.Errorf("mysql accountstore: %w", err)
+	}
+
+	d.ProviderStorage, err = mysqlProviderStore.NewStore(mysqlProviderStore.WithInstanceName(defaultInstanceName))
+	if err != nil {
+		return fmt.Errorf("mysql providerstore: %w", err)
+	}
+
+	d.StatsStore, err = mysqlStatsStore.NewStore(mysqlStatsStore.WithInstanceName(defaultInstanceName))
+	if err != nil {
+		return fmt.Errorf("mysql statsstore: %w", err)
+	}
+
+	d.usageStore, err = mysqlUsageStore.NewStore(mysqlUsageStore.WithInstanceName(defaultInstanceName))
+	if err != nil {
+		return fmt.Errorf("mysql usagestore: %w", err)
+	}
+
+	return nil
+}
+
+// buildSQLiteStorage 注册 SQLite 实例并初始化所有 store。
+func (d *Dependencies) buildSQLiteStorage(cfg config.StorageDriverConfig) error {
+	storeSqlite.RegisterInstance(defaultInstanceName, storeSqlite.WithClientBuilderDSN(cfg.DSN))
+
+	var err error
+
+	d.AccountStorage, err = sqliteAccountStore.NewStore(sqliteAccountStore.WithInstanceName(defaultInstanceName))
+	if err != nil {
+		return fmt.Errorf("sqlite accountstore: %w", err)
+	}
+
+	d.ProviderStorage, err = sqliteProviderStore.NewStore(sqliteProviderStore.WithInstanceName(defaultInstanceName))
+	if err != nil {
+		return fmt.Errorf("sqlite providerstore: %w", err)
+	}
+
+	d.StatsStore, err = sqliteStatsStore.NewStore(sqliteStatsStore.WithInstanceName(defaultInstanceName))
+	if err != nil {
+		return fmt.Errorf("sqlite statsstore: %w", err)
+	}
+
+	d.usageStore, err = sqliteUsageStore.NewStore(sqliteUsageStore.WithInstanceName(defaultInstanceName))
+	if err != nil {
+		return fmt.Errorf("sqlite usagestore: %w", err)
+	}
+
+	return nil
+}
+
+// buildRedisStorage 注册 Redis 实例并初始化所有 store。
+func (d *Dependencies) buildRedisStorage(cfg config.StorageDriverConfig) error {
+	storeRedis.RegisterInstance(defaultInstanceName, storeRedis.WithClientBuilderDSN(cfg.DSN))
+
+	var err error
+
+	d.AccountStorage, err = redisAccountStore.NewStore(redisAccountStore.WithInstanceName(defaultInstanceName))
+	if err != nil {
+		return fmt.Errorf("redis accountstore: %w", err)
+	}
+
+	d.ProviderStorage, err = redisProviderStore.NewStore(redisProviderStore.WithInstanceName(defaultInstanceName))
+	if err != nil {
+		return fmt.Errorf("redis providerstore: %w", err)
+	}
+
+	d.StatsStore, err = redisStatsStore.NewStore(redisStatsStore.WithInstanceName(defaultInstanceName))
+	if err != nil {
+		return fmt.Errorf("redis statsstore: %w", err)
+	}
+
+	d.usageStore, err = redisUsageStore.NewStore(redisUsageStore.WithInstanceName(defaultInstanceName))
+	if err != nil {
+		return fmt.Errorf("redis usagestore: %w", err)
+	}
+
+	return nil
 }
 
 // --- Selector 构建 ---
