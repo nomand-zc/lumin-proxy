@@ -28,10 +28,6 @@ import (
 const (
 	// pidFile PID 文件路径
 	pidFile = "lumin-proxy.pid"
-	// upgradeTimeout 新进程就绪超时时间
-	upgradeTimeout = 60 * time.Second
-	// stopTimeout 优雅关闭超时时间（等待存量请求排空）
-	stopTimeout = 60 * time.Second
 
 	// signalStart 启动命令
 	signalStart = "start"
@@ -52,13 +48,16 @@ type App struct {
 	PluginManager plugin.LifecycleManager
 	Proxy         proxy.Proxy
 	acpoolDeps    *acpool.Dependencies // 账号池依赖（由配置驱动自动构建）
+
+	upgradeTimeout time.Duration
 }
 
 // New 根据配置初始化所有依赖，返回 App 实例。
 // 初始化顺序: Config → PluginManager → ACPool → Proxy → initServer(tableflip → Listener → HTTP Server → Router → Kratos App)
 func New(ctx context.Context, cfg *config.Config, opts ...Option) (*App, error) {
 	a := &App{
-		Config: cfg,
+		Config:         cfg,
+		upgradeTimeout: 60,
 	}
 
 	// 应用选项
@@ -67,6 +66,10 @@ func New(ctx context.Context, cfg *config.Config, opts ...Option) (*App, error) 
 		opt(o)
 	}
 	a.opts = o
+
+	if cfg.UpgradeTimeout > 0 {
+		a.upgradeTimeout = time.Second * time.Duration(cfg.UpgradeTimeout)
+	}
 
 	// 如果是 -s 命令模式，跳过业务依赖初始化（只需要发信号）
 	if o.signal != "" && o.signal != signalStart {
@@ -112,7 +115,7 @@ func New(ctx context.Context, cfg *config.Config, opts ...Option) (*App, error) 
 func (a *App) initServer() error {
 	// ① 初始化 tableflip Upgrader
 	upg, err := tableflip.New(tableflip.Options{
-		UpgradeTimeout: upgradeTimeout,
+		UpgradeTimeout: a.upgradeTimeout,
 	})
 	if err != nil {
 		return fmt.Errorf("初始化优雅重启管理器失败: %w", err)
@@ -146,7 +149,7 @@ func (a *App) initServer() error {
 		kratos.Name("lumin-proxy"),
 		kratos.Server(a.httpServer),
 		kratos.Signal(syscall.SIGUSR2),
-		kratos.StopTimeout(stopTimeout),
+		kratos.StopTimeout(a.upgradeTimeout),
 		kratos.AfterStart(func(ctx context.Context) error {
 			// Server 已启动并开始 Accept，标记进程就绪（通知旧进程可以退出）
 			if err := a.upg.Ready(); err != nil {
@@ -179,7 +182,7 @@ func (a *App) Run() error {
 	err := a.kratosApp.Run()
 
 	// ③ Run 返回后执行清理（业务组件 + tableflip + PID 文件）
-	ctx, cancel := context.WithTimeout(context.Background(), stopTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), a.upgradeTimeout)
 	defer cancel()
 	if shutdownErr := a.Shutdown(ctx); shutdownErr != nil {
 		log.Errorf("关闭资源失败: %v", shutdownErr)

@@ -2,59 +2,48 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug Token Refresh",
+            "name": "调试 lumin-proxy (启动)",
             "type": "go",
             "request": "launch",
-            "mode": "debug",
-            "program": "${workspaceFolder}/cli/main.go",
+            "mode": "auto",
+            "program": "${workspaceFolder}/cmd/lumin-proxy",
             "args": [
-                "token",
-                "refresh",
-                "--file",
-                "${workspaceFolder}/cli/testdata/kiro/creds-src/8.json",
-                "--provider",
-                "kiro"
+                "-c",
+                "lumin_proxy.yaml"
             ],
             "env": {},
+            "cwd": "${workspaceFolder}",
             "showLog": true,
-            "console": "integratedTerminal"
+            "logOutput": "rpc",
+            "trace": "verbose"
         },
         {
-            "name": "Debug Usage CMD",
+            "name": "调试 lumin-proxy (编译后调试)",
             "type": "go",
             "request": "launch",
             "mode": "debug",
-            "program": "${workspaceFolder}/cli/main.go",
+            "program": "${workspaceFolder}/cmd/lumin-proxy",
             "args": [
-                "usage",
-                "view",
-                "--file",
-                "${workspaceFolder}/cli/testdata/kiro/creds-src/52.json",
-                "--provider",
-                "kiro"
+                "-c",
+                "lumin_proxy.yaml"
             ],
             "env": {},
+            "cwd": "${workspaceFolder}",
             "showLog": true,
-            "console": "integratedTerminal"
+            "logOutput": "rpc",
+            "trace": "verbose"
         },
         {
-            "name": "Debug Stream CMD",
+            "name": "调试 lumin-proxy (远程调试)",
             "type": "go",
-            "request": "launch",
-            "mode": "debug",
-            "program": "${workspaceFolder}/cli/main.go",
-            "args": [
-                "stream",
-                "--creds",
-                "${workspaceFolder}/cli/testdata/kiro/creds-src/8.json",
-                "--data",
-                "${workspaceFolder}/cli/testdata/kiro/data.json",
-                "--provider",
-                "kiro"
-            ],
-            "env": {},
+            "request": "attach",
+            "mode": "remote",
+            "remotePath": "${workspaceFolder}",
+            "port": 2345,
+            "host": "127.0.0.1",
             "showLog": true,
-            "console": "integratedTerminal"
+            "logOutput": "rpc",
+            "trace": "verbose"
         }
     ]
 }

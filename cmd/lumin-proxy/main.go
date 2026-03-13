@@ -16,6 +16,9 @@ import (
 
 	// 通过 init() 注册内置插件
 	_ "github.com/nomand-zc/lumin-proxy/plugin/builtin/auth"
+
+	// 通过 init() 注册kiro client
+	_ "github.com/nomand-zc/lumin-client/providers/kiro"
 )
 
 var (

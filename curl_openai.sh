@@ -4,7 +4,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer sk-your-api-key-1" \
   -d '{
-  "model": "gpt-4",
+  "model": "claude-haiku-4.5",
   "stream": false,
   "max_tokens": 4096,
   "temperature": 0.7,

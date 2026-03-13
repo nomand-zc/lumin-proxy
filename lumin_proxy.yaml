@@ -1,4 +1,6 @@
 # ===================== HTTP 服务配置 =====================
+upgrade_timeout: 3
+
 server:
   # 监听地址
   address: ":8080"
@@ -109,4 +111,4 @@ admin:
 # ===================== 日志配置 =====================
 log:
   # 日志级别: debug | info | warn | error
-  level: "info"
+  level: "debug"

@@ -5,7 +5,7 @@ import (
 	"os"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	yaml "gopkg.in/yaml.v3"
 )
 
 // Config 是 lumin-proxy 的顶层配置结构体。
@@ -20,6 +20,8 @@ type Config struct {
 	Plugins PluginConfigs `yaml:"plugins"`
 	// Admin 运维接口配置
 	Admin AdminConfig `yaml:"admin"`
+	// UpgradeTimeout 优雅重启超时时间
+	UpgradeTimeout int `yaml:"upgrade_timeout"`
 	// Log 日志配置
 	Log LogConfig `yaml:"log"`
 }
@@ -150,6 +152,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.Server.IdleTimeout == 0 {
 		c.Server.IdleTimeout = 120 * time.Second
+	}
+	if c.UpgradeTimeout == 0 {
+		c.UpgradeTimeout = 60
 	}
 	if c.Log.Level == "" {
 		c.Log.Level = "info"
