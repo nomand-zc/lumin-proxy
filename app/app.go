@@ -138,13 +138,14 @@ func (a *App) initServer() error {
 	router.Register(a.httpServer, a.Config, a.Proxy, a.PluginManager)
 
 	// ⑤ 构建 Kratos App
-	// Signal() 传空：禁用 Kratos 自带信号处理，由 App 统一管理信号
+	// Signal() 不能传空（空参数会导致 signal.Notify 监听所有信号，服务会立刻退出）
+	// 传入一个不会被外部常规触发的 SIGUSR2，由 App.waitForExit() 统一管理真正的退出信号
 	// StopTimeout：控制 Shutdown 等待存量请求排空的超时时间
 	// AfterStart：Server 启动后标记进程就绪 + 写 PID 文件
 	a.kratosApp = kratos.New(
 		kratos.Name("lumin-proxy"),
 		kratos.Server(a.httpServer),
-		kratos.Signal(),
+		kratos.Signal(syscall.SIGUSR2),
 		kratos.StopTimeout(stopTimeout),
 		kratos.AfterStart(func(ctx context.Context) error {
 			// Server 已启动并开始 Accept，标记进程就绪（通知旧进程可以退出）
