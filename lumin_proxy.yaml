@@ -1,0 +1,112 @@
+# ===================== HTTP 服务配置 =====================
+server:
+  # 监听地址
+  address: ":8080"
+  # 读超时（默认 30s）
+  read_timeout: 30s
+  # 写超时（流式响应需要较长超时，默认 120s）
+  write_timeout: 120s
+  # 空闲超时（默认 120s）
+  idle_timeout: 120s
+
+  # TLS 配置（可选，不需要 HTTPS 可删除此段）
+  # tls:
+  #   cert_file: "./certs/server.crt"
+  #   key_file: "./certs/server.key"
+
+# ===================== 代理核心配置 =====================
+proxy:
+  # 协议适配器列表
+  protocols:
+    # OpenAI 兼容协议
+    - name: "openai"
+      enable: true
+      # 路由前缀，如 /v1/chat/completions
+      prefix: "/v1"
+
+    # Anthropic 协议
+    - name: "anthropic"
+      enable: false
+      prefix: "/anthropic"
+
+# ===================== 账号池配置（lumin-acpool）=====================
+acpool:
+  # ---------- 存储驱动配置 ----------
+  storage:
+    # 驱动类型: memory | mysql | sqlite | redis
+    driver: "sqlite"
+    # SQLite 数据库文件路径
+    dsn: "./data/acpool.db"
+
+  # ---------- 负载均衡器配置 ----------
+  balancer:
+    # 默认最大重试次数（0 表示不重试）
+    default_max_retries: 3
+    # 是否默认启用故障转移
+    default_enable_failover: true
+
+    # 账号级选择策略: round_robin | priority | weighted | least_used | affinity
+    selector: "round_robin"
+
+    # 供应商级选择策略: group_priority | group_round_robin | group_weighted | group_most_available | group_affinity
+    group_selector: "group_priority"
+
+    # 并发占用控制策略
+    occupancy:
+      # 策略类型: unlimited | fixed_limit | adaptive_limit
+      strategy: "fixed_limit"
+      # 固定并发上限（fixed_limit 专用）
+      default_limit: 10
+
+      # --- adaptive_limit 策略参数（使用 adaptive_limit 时取消注释）---
+      # factor: 0.8
+      # min_limit: 1
+      # max_limit: 100
+      # fallback_limit: 1
+
+    # 熔断器配置（不需要可设为 null 或删除此段）
+    circuit_breaker:
+      # 连续失败阈值
+      default_threshold: 5
+      # 熔断恢复超时时间
+      default_timeout: 60s
+      # 动态阈值比例
+      threshold_ratio: 0.5
+      # 最小阈值
+      min_threshold: 3
+
+    # 冷却管理器配置（不需要可设为 null 或删除此段）
+    cooldown:
+      # 默认冷却时长
+      default_duration: 30s
+
+    # 用量追踪器配置（不需要可设为 null 或删除此段）
+    usage_tracker:
+      # 安全阈值比例（0.0 ~ 1.0）
+      safety_ratio: 0.95
+
+# ===================== 插件配置（按声明顺序执行）=====================
+plugins:
+  # API Key 鉴权插件
+  auth:
+    # 是否启用鉴权
+    enabled: true
+    # 有效的 API Key 列表
+    keys:
+      - "sk-your-api-key-1"
+      - "sk-your-api-key-2"
+    # 不需要鉴权的路径前缀列表
+    skip_paths:
+      - "/healthz"
+
+# ===================== 运维接口配置 =====================
+admin:
+  # 是否启用运维接口
+  enable: true
+  # 运维接口监听地址（默认 :8081）
+  address: ":8081"
+
+# ===================== 日志配置 =====================
+log:
+  # 日志级别: debug | info | warn | error
+  level: "info"
