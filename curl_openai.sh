@@ -5,7 +5,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Authorization: Bearer sk-your-api-key-1" \
   -d '{
   "model": "claude-haiku-4.5",
-  "stream": false,
+  "stream": true,
   "max_tokens": 4096,
   "temperature": 0.7,
   "tools": [

@@ -15,32 +15,17 @@ import (
 	accountstrategies "github.com/nomand-zc/lumin-acpool/selector/strategies/account"
 	groupstrategies "github.com/nomand-zc/lumin-acpool/selector/strategies/group"
 	"github.com/nomand-zc/lumin-acpool/storage"
-	"github.com/nomand-zc/lumin-acpool/storage/memory/accountstore"
-	"github.com/nomand-zc/lumin-acpool/storage/memory/providerstore"
-	"github.com/nomand-zc/lumin-acpool/storage/memory/statsstore"
-	"github.com/nomand-zc/lumin-acpool/storage/memory/usagestore"
+	storeMemory "github.com/nomand-zc/lumin-acpool/storage/memory"
 	"github.com/nomand-zc/lumin-acpool/usagetracker"
 
-	// MySQL stores + client
+	// MySQL store + client
 	storeMysql "github.com/nomand-zc/lumin-acpool/storage/mysql"
-	mysqlAccountStore "github.com/nomand-zc/lumin-acpool/storage/mysql/accountstore"
-	mysqlProviderStore "github.com/nomand-zc/lumin-acpool/storage/mysql/providerstore"
-	mysqlStatsStore "github.com/nomand-zc/lumin-acpool/storage/mysql/statsstore"
-	mysqlUsageStore "github.com/nomand-zc/lumin-acpool/storage/mysql/usagestore"
 
-	// Redis stores + client
+	// Redis store + client
 	storeRedis "github.com/nomand-zc/lumin-acpool/storage/redis"
-	redisAccountStore "github.com/nomand-zc/lumin-acpool/storage/redis/accountstore"
-	redisProviderStore "github.com/nomand-zc/lumin-acpool/storage/redis/providerstore"
-	redisStatsStore "github.com/nomand-zc/lumin-acpool/storage/redis/statsstore"
-	redisUsageStore "github.com/nomand-zc/lumin-acpool/storage/redis/usagestore"
 
-	// SQLite stores + client
+	// SQLite store + client
 	storeSqlite "github.com/nomand-zc/lumin-acpool/storage/sqlite"
-	sqliteAccountStore "github.com/nomand-zc/lumin-acpool/storage/sqlite/accountstore"
-	sqliteProviderStore "github.com/nomand-zc/lumin-acpool/storage/sqlite/providerstore"
-	sqliteStatsStore "github.com/nomand-zc/lumin-acpool/storage/sqlite/statsstore"
-	sqliteUsageStore "github.com/nomand-zc/lumin-acpool/storage/sqlite/usagestore"
 
 	"github.com/nomand-zc/lumin-proxy/config"
 )
@@ -170,10 +155,11 @@ func Build(cfg config.ACPoolConfig) (*Dependencies, error) {
 func (d *Dependencies) buildStorage(cfg config.StorageDriverConfig) error {
 	switch cfg.Driver {
 	case "", "memory":
-		d.AccountStorage = accountstore.NewStore()
-		d.ProviderStorage = providerstore.NewStore()
-		d.StatsStore = statsstore.NewMemoryStatsStore()
-		d.usageStore = usagestore.NewMemoryUsageStore()
+		ms := storeMemory.NewStore()
+		d.AccountStorage = ms
+		d.ProviderStorage = ms
+		d.StatsStore = ms
+		d.usageStore = ms
 		return nil
 	case "mysql":
 		return d.buildMySQLStorage(cfg)
@@ -192,27 +178,16 @@ const defaultInstanceName = "default"
 func (d *Dependencies) buildMySQLStorage(cfg config.StorageDriverConfig) error {
 	storeMysql.RegisterInstance(defaultInstanceName, storeMysql.WithClientBuilderDSN(cfg.DSN))
 
-	var err error
-
-	d.AccountStorage, err = mysqlAccountStore.NewStore(mysqlAccountStore.WithInstanceName(defaultInstanceName))
+	ms, err := storeMysql.NewStore(storeMysql.WithInstanceName(defaultInstanceName))
 	if err != nil {
-		return fmt.Errorf("mysql accountstore: %w", err)
+		return fmt.Errorf("mysql store: %w", err)
 	}
 
-	d.ProviderStorage, err = mysqlProviderStore.NewStore(mysqlProviderStore.WithInstanceName(defaultInstanceName))
-	if err != nil {
-		return fmt.Errorf("mysql providerstore: %w", err)
-	}
-
-	d.StatsStore, err = mysqlStatsStore.NewStore(mysqlStatsStore.WithInstanceName(defaultInstanceName))
-	if err != nil {
-		return fmt.Errorf("mysql statsstore: %w", err)
-	}
-
-	d.usageStore, err = mysqlUsageStore.NewStore(mysqlUsageStore.WithInstanceName(defaultInstanceName))
-	if err != nil {
-		return fmt.Errorf("mysql usagestore: %w", err)
-	}
+	d.AccountStorage = ms
+	d.ProviderStorage = ms
+	d.StatsStore = ms
+	d.usageStore = ms
+	d.closers = append(d.closers, ms)
 
 	return nil
 }
@@ -221,27 +196,16 @@ func (d *Dependencies) buildMySQLStorage(cfg config.StorageDriverConfig) error {
 func (d *Dependencies) buildSQLiteStorage(cfg config.StorageDriverConfig) error {
 	storeSqlite.RegisterInstance(defaultInstanceName, storeSqlite.WithClientBuilderDSN(cfg.DSN))
 
-	var err error
-
-	d.AccountStorage, err = sqliteAccountStore.NewStore(sqliteAccountStore.WithInstanceName(defaultInstanceName))
+	ss, err := storeSqlite.NewStore(storeSqlite.WithInstanceName(defaultInstanceName))
 	if err != nil {
-		return fmt.Errorf("sqlite accountstore: %w", err)
+		return fmt.Errorf("sqlite store: %w", err)
 	}
 
-	d.ProviderStorage, err = sqliteProviderStore.NewStore(sqliteProviderStore.WithInstanceName(defaultInstanceName))
-	if err != nil {
-		return fmt.Errorf("sqlite providerstore: %w", err)
-	}
-
-	d.StatsStore, err = sqliteStatsStore.NewStore(sqliteStatsStore.WithInstanceName(defaultInstanceName))
-	if err != nil {
-		return fmt.Errorf("sqlite statsstore: %w", err)
-	}
-
-	d.usageStore, err = sqliteUsageStore.NewStore(sqliteUsageStore.WithInstanceName(defaultInstanceName))
-	if err != nil {
-		return fmt.Errorf("sqlite usagestore: %w", err)
-	}
+	d.AccountStorage = ss
+	d.ProviderStorage = ss
+	d.StatsStore = ss
+	d.usageStore = ss
+	d.closers = append(d.closers, ss)
 
 	return nil
 }
@@ -250,27 +214,16 @@ func (d *Dependencies) buildSQLiteStorage(cfg config.StorageDriverConfig) error 
 func (d *Dependencies) buildRedisStorage(cfg config.StorageDriverConfig) error {
 	storeRedis.RegisterInstance(defaultInstanceName, storeRedis.WithClientBuilderDSN(cfg.DSN))
 
-	var err error
-
-	d.AccountStorage, err = redisAccountStore.NewStore(redisAccountStore.WithInstanceName(defaultInstanceName))
+	rs, err := storeRedis.NewStore(storeRedis.WithInstanceName(defaultInstanceName))
 	if err != nil {
-		return fmt.Errorf("redis accountstore: %w", err)
+		return fmt.Errorf("redis store: %w", err)
 	}
 
-	d.ProviderStorage, err = redisProviderStore.NewStore(redisProviderStore.WithInstanceName(defaultInstanceName))
-	if err != nil {
-		return fmt.Errorf("redis providerstore: %w", err)
-	}
-
-	d.StatsStore, err = redisStatsStore.NewStore(redisStatsStore.WithInstanceName(defaultInstanceName))
-	if err != nil {
-		return fmt.Errorf("redis statsstore: %w", err)
-	}
-
-	d.usageStore, err = redisUsageStore.NewStore(redisUsageStore.WithInstanceName(defaultInstanceName))
-	if err != nil {
-		return fmt.Errorf("redis usagestore: %w", err)
-	}
+	d.AccountStorage = rs
+	d.ProviderStorage = rs
+	d.StatsStore = rs
+	d.usageStore = rs
+	d.closers = append(d.closers, rs)
 
 	return nil
 }
